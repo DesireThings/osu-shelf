@@ -31,3 +31,8 @@ sudo pacman -U osu-shelf-*.pkg.tar.zst
 - After editing `PKGBUILD`, regenerate the metadata with
   `makepkg --printsrcinfo > .SRCINFO` so the files stay ready for an AUR
   submission when registrations reopen.
+- makepkg's source cache (`SRCDEST`) defaults to this directory. When
+  `pkgver` changes, the previous release's `THIRD-PARTY-LICENSES-desktop.txt`
+  is still here and is reused as if it had been downloaded for the new
+  version, so it fails the checksum. Run `makepkg --clean` (or delete that
+  file) before building a new version.

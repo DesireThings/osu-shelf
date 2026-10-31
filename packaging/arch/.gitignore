@@ -2,3 +2,11 @@
 /pkg/
 /*.pkg.tar.zst
 /*.pkg.tar.zst.sig
+
+# makepkg's source cache: SRCDEST defaults to the PKGBUILD's directory, so VCS
+# clones and downloaded sources land here.
+/osu-shelf/
+/realm-core/
+/realm-sha1/
+/realm-sha2/
+/THIRD-PARTY-LICENSES-desktop.txt
