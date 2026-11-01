@@ -1,6 +1,6 @@
 pkgbase = osu-shelf
 	pkgdesc = Download osu!collector collections and import them into osu! (GUI and TUI)
-	pkgver = 0.3.1
+	pkgver = 0.4.0
 	pkgrel = 1
 	url = https://github.com/DesireThings/osu-shelf
 	arch = x86_64
@@ -21,17 +21,17 @@ pkgbase = osu-shelf
 	depends = xdg-utils
 	depends = zlib
 	options = !lto
-	source = osu-shelf::git+https://github.com/DesireThings/osu-shelf.git#tag=v0.3.1
+	source = osu-shelf::git+https://github.com/DesireThings/osu-shelf.git#tag=v0.4.0
 	source = realm-core::git+https://github.com/realm/realm-core.git#commit=10b706633bc94fce130ebe72707c6deb7a7ba041
 	source = realm-sha1::git+https://github.com/clibs/sha1.git#commit=d9ae30f34095107ece9dceb224839f0dc2f9c1c7
 	source = realm-sha2::git+https://github.com/kalven/sha-2.git#commit=0e9aebf34101c6aa89355fd76ac9cd886735dee1
 	source = system-openssl.patch
-	source = THIRD-PARTY-LICENSES-desktop.txt::https://github.com/DesireThings/osu-shelf/releases/download/v0.3.1/THIRD-PARTY-LICENSES-desktop.txt
+	source = THIRD-PARTY-LICENSES-desktop.txt::https://github.com/DesireThings/osu-shelf/releases/download/v0.4.0/THIRD-PARTY-LICENSES-desktop.txt
 	sha256sums = SKIP
 	sha256sums = SKIP
 	sha256sums = SKIP
 	sha256sums = SKIP
 	sha256sums = 7066caeed81c980a916986596144c35fed0712870d156c5bf1807794a881c022
-	sha256sums = c006e8c28759f7d03c685166065cdc1fb9d7ac4a4b0a32f8a4afa3e84c0cd6c4
+	sha256sums = 50d1e47a3a7bf90d6970c615a0d03c2e40a8217d64350cf0fb52c95880426444
 
 pkgname = osu-shelf

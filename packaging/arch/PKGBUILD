@@ -1,6 +1,6 @@
 # Maintainer: Kieran <kieran.parry2004@gmail.com>
 pkgname=osu-shelf
-pkgver=0.3.1
+pkgver=0.4.0
 pkgrel=1
 pkgdesc='Download osu!collector collections and import them into osu! (GUI and TUI)'
 arch=('x86_64')
@@ -48,7 +48,7 @@ source=(
   # needs, is not packaged for Arch. Pinned by checksum.
   "THIRD-PARTY-LICENSES-desktop.txt::$url/releases/download/v$pkgver/THIRD-PARTY-LICENSES-desktop.txt"
 )
-sha256sums=('SKIP' 'SKIP' 'SKIP' 'SKIP' '7066caeed81c980a916986596144c35fed0712870d156c5bf1807794a881c022' 'c006e8c28759f7d03c685166065cdc1fb9d7ac4a4b0a32f8a4afa3e84c0cd6c4')
+sha256sums=('SKIP' 'SKIP' 'SKIP' 'SKIP' '7066caeed81c980a916986596144c35fed0712870d156c5bf1807794a881c022' '50d1e47a3a7bf90d6970c615a0d03c2e40a8217d64350cf0fb52c95880426444')
 
 prepare() {
   cd "$pkgname"
