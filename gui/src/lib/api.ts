@@ -44,6 +44,7 @@ export interface MirrorSetting {
   enabled: boolean;
   name: string;
   note: string | null;
+  limits: string | null;
 }
 
 export type ArchiveValidation = "off" | "magic" | "eocd";

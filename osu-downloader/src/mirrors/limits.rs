@@ -57,6 +57,9 @@ pub(crate) struct LimitPolicy {
     pub(crate) byte_reserve: u64,
     /// A fixed quota for mirrors that publish no headers.
     pub(crate) static_quota: Option<StaticQuotaSpec>,
+    /// The mirror's limits as a user would read them. Display only: scheduling
+    /// follows the live headers, so this can't hold a download back.
+    pub(crate) summary: Option<&'static str>,
 }
 
 impl LimitPolicy {
@@ -65,6 +68,7 @@ impl LimitPolicy {
             rate_cost: 1,
             byte_reserve: 0,
             static_quota: None,
+            summary: None,
         }
     }
 
@@ -73,6 +77,8 @@ impl LimitPolicy {
             rate_cost: CATBOY_RATE_COST,
             byte_reserve: 0,
             static_quota: None,
+            // 1200 units/min at CATBOY_RATE_COST units a download.
+            summary: Some("60 downloads/min"),
         }
     }
 
@@ -81,6 +87,7 @@ impl LimitPolicy {
             rate_cost: 1,
             byte_reserve: OSU_DIRECT_BYTE_RESERVE,
             static_quota: None,
+            summary: Some("120 req/min, 8 GiB/day"),
         }
     }
 
@@ -92,6 +99,7 @@ impl LimitPolicy {
                 limit: OSU_API_DOWNLOAD_LIMIT,
                 window: OSU_API_DOWNLOAD_WINDOW,
             }),
+            summary: Some("10 downloads/hour"),
         }
     }
 }

@@ -304,3 +304,34 @@ fn tokens_by_static_quota_expands_by_full_windows() {
         "a full window refills the quota"
     );
 }
+
+#[test]
+fn only_mirrors_with_known_limits_have_a_summary() {
+    use crate::MirrorKind;
+
+    for kind in MirrorKind::BUILTINS {
+        let known = matches!(
+            kind,
+            MirrorKind::Catboy | MirrorKind::OsuDirect | MirrorKind::OsuApi
+        );
+        assert_eq!(kind.limit_summary().is_some(), known, "{kind:?}");
+    }
+    assert_eq!(MirrorKind::Custom.limit_summary(), None);
+}
+
+#[test]
+fn the_catboy_summary_matches_its_download_cost() {
+    let downloads_per_minute = 1200 / CATBOY_RATE_COST;
+    assert_eq!(
+        LimitPolicy::catboy().summary,
+        Some(format!("{downloads_per_minute} downloads/min").as_str())
+    );
+}
+
+#[test]
+fn the_osu_summary_matches_its_static_quota() {
+    assert_eq!(
+        LimitPolicy::osu_api().summary,
+        Some(format!("{OSU_API_DOWNLOAD_LIMIT} downloads/hour").as_str())
+    );
+}

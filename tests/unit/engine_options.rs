@@ -32,6 +32,13 @@ fn the_default_config_lists_every_offered_mirror_in_try_order() {
         .unwrap();
     assert!(!nzbasic.enabled, "off by default");
     assert!(nzbasic.note.is_some());
+    assert_eq!(nzbasic.limits, None, "publishes no limits");
+    let osu_direct = options
+        .mirrors
+        .iter()
+        .find(|m| m.host == "osu.direct")
+        .unwrap();
+    assert_eq!(osu_direct.limits.as_deref(), Some("120 req/min, 8 GiB/day"));
     assert_eq!(options.threads, None);
     assert!(options.default_threads >= 1);
 }
