@@ -356,7 +356,7 @@
                 <label class="mirror-main">
                   <input type="checkbox" bind:checked={mirror.enabled} />
                   <span class="text">
-                    <span class="label">{mirror.name} <span class="muted small">{mirror.host}</span></span>
+                    <span class="label">{mirror.name} <span class="muted small">{mirror.host} · {mirror.limits ?? "limits unknown"}</span></span>
                     {#if mirror.note}
                       <span class="hint">{mirror.note}</span>
                     {/if}

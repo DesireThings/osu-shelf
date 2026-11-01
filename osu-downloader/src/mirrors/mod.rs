@@ -121,8 +121,8 @@ impl MirrorKind {
                 template_no_video: "https://osudl.org/s/{id}?video=false",
             }),
             MirrorKind::Catboy => Some(ProviderMeta {
-                // No published rate limit; a fast anonymous mirror. Match the
-                // other anonymous mirrors' penalty backoff.
+                // A fast anonymous mirror. Match the other anonymous mirrors'
+                // penalty backoff.
                 label: "catboy.best",
                 backoff_secs: 45,
                 template: "https://catboy.best/d/{id}",
@@ -250,6 +250,13 @@ impl MirrorKind {
             MirrorKind::OsuApi => LimitPolicy::osu_api(),
             _ => LimitPolicy::simple(),
         }
+    }
+
+    /// A one-line summary of this mirror's known limits for display (e.g.
+    /// `"120 req/min, 8 GiB/day"`), or `None` when they aren't known.
+    #[inline]
+    pub fn limit_summary(&self) -> Option<&'static str> {
+        self.limit_policy().summary
     }
 
     fn download_template(&self, no_video: bool) -> Option<&'static str> {

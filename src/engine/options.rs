@@ -24,6 +24,10 @@ pub struct MirrorSetting {
     /// What to know before turning it on or off; ignored on save.
     #[serde(default)]
     pub note: Option<String>,
+    /// One-line summary of its known limits, `None` when they aren't known;
+    /// ignored on save.
+    #[serde(default)]
+    pub limits: Option<String>,
 }
 
 /// The download settings the GUI edits. Saving keeps every other key in
@@ -65,6 +69,7 @@ impl DownloadOptions {
                         enabled: *mirror_flag(&config.mirror, kind)?,
                         name: mirror_name(kind).to_string(),
                         note: mirror_note(kind).map(str::to_string),
+                        limits: kind.limit_summary().map(str::to_string),
                     })
                 })
                 .collect(),
