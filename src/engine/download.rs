@@ -12,9 +12,9 @@ use crate::{
     app::{collection::FailureReason, custom_mirrors::CustomMirrorList},
     config::{Config, MirrorConfig, load_config_or_default},
     download::{
-        BeatmapStage, DownloadConfig, DownloadEvent, DownloadHandle, DownloadId, DownloadRequest,
-        DownloadStage, IdsDownloadRequest, SelectiveDownloadRequest, spawn_download,
-        spawn_ids_download, spawn_selective_download,
+        BeatmapStage, DeferReason, DownloadConfig, DownloadEvent, DownloadHandle, DownloadId,
+        DownloadRequest, DownloadStage, IdsDownloadRequest, SelectiveDownloadRequest,
+        spawn_download, spawn_ids_download, spawn_selective_download,
     },
     mirrors::{Mirror, MirrorKind},
     osu_db::{BeatmapReader, LazerReader, OsuClient, StableReader},
@@ -250,13 +250,15 @@ impl DownloadStatus {
                 beatmapset_id,
                 pass,
                 retry_in,
+                reason,
                 ..
             } => {
                 self.active_sets.remove(beatmapset_id);
                 self.in_flight.remove(beatmapset_id);
-                // Pass 0 is a healthy set waiting its turn on a mirror's request
-                // spacing: it's just queued, and a skip wouldn't drop it.
-                if *pass == 0 {
+                // A spacing requeue at pass 0 is a healthy set waiting its turn
+                // on a mirror's request spacing: it's just queued, and a skip
+                // wouldn't drop it. Cooldown and budget waits are genuine waits.
+                if *pass == 0 && matches!(*reason, DeferReason::Spacing) {
                     self.deferred.remove(beatmapset_id);
                 } else {
                     self.rate_limited.insert(*beatmapset_id);

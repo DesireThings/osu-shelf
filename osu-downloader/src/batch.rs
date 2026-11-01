@@ -2,22 +2,24 @@
 //!
 //! The library entrypoint ([`Downloader::download_many`](crate::Downloader::download_many))
 //! delegates here. Items live in a shared queue; a worker pool of `concurrent_downloads` tasks
-//! leases from it. A map whose mirrors are all cooling for longer than the inline-wait threshold
-//! is [`Deferred`](crate::download::BeatmapsetDownloadOutcome::Deferred) and pushed back onto the
-//! queue tail, so it is retried once its earliest mirror frees instead of parking a worker. Only a
-//! rate-limit-sourced defer increments the pass counter; after [`DEFERRAL_PASS_CAP`] such deferrals
-//! the map is dropped as [`Skip::RateLimitSkipped`]. A pure request-spacing defer (a healthy map
-//! waiting for a send token) requeues at the same pass, so it is never counted toward the cap. A
-//! caller hard-drop
-//! ([`Session::skip_rate_limited`](crate::Session::skip_rate_limited)) drains every
-//! deferred-pending item out of the queue immediately, even while all workers are busy.
+//! leases from it. A map whose mirrors are all cooling or out of budget for longer than the
+//! inline-wait threshold is [`Deferred`](crate::download::BeatmapsetDownloadOutcome::Deferred)
+//! and pushed back onto the queue tail, so it is retried once its earliest mirror frees instead
+//! of parking a worker. Only a cooldown-sourced defer increments the pass counter; a budget
+//! defer is bounded by the budget reset and requeues at the same pass, so a long daily window
+//! does not silently consume the map's drop eligibility. After [`DEFERRAL_PASS_CAP`] reactive
+//! cooldown deferrals the map is dropped as [`Skip::RateLimitSkipped`]. A pure request-spacing
+//! defer (a healthy map waiting for a send token) requeues at the same pass, so it is never
+//! counted toward the cap. A caller hard-drop
+//! ([`Session::skip_rate_limited`](crate::Session::skip_rate_limited)) drains every deferred
+//! item out of the queue immediately, even while all workers are busy.
 
 use crate::{
     Error, Event, Summary,
     config::{DEFERRAL_PASS_CAP, NETWORK_RETRY_BACKOFF},
     download::{self, BeatmapsetDownloadCallbacks, BeatmapsetDownloadOutcome, download_beatmapset},
     downloader::OnExists,
-    event::{Skip, Status},
+    event::{DeferReason, Skip, Status},
     mirrors::MirrorPool,
     validation::ArchiveValidation,
 };
@@ -62,10 +64,13 @@ pub(crate) struct BatchConfig {
 
 struct QueueItem {
     id: u32,
-    /// Deferrals so far; 0 for a fresh item.
+    /// Reactive cooldown deferrals so far; 0 for a fresh item.
     pass: u32,
     /// Earliest instant this item may be leased again.
     ready_at: Instant,
+    /// Whether this item is waiting on a cooldown or budget, as opposed to a
+    /// healthy request-spacing requeue. The hard-drop signal drains these.
+    deferred: bool,
 }
 
 enum Lease {
@@ -100,6 +105,7 @@ impl BatchQueue {
                 id,
                 pass: 0,
                 ready_at: now,
+                deferred: false,
             })
             .collect();
         Self {
@@ -131,9 +137,14 @@ impl BatchQueue {
         }
     }
 
-    fn requeue(&self, id: u32, pass: u32, ready_at: Instant) {
+    fn requeue(&self, id: u32, pass: u32, ready_at: Instant, deferred: bool) {
         let mut inner = self.inner.lock().unwrap();
-        inner.items.push_back(QueueItem { id, pass, ready_at });
+        inner.items.push_back(QueueItem {
+            id,
+            pass,
+            ready_at,
+            deferred,
+        });
         drop(inner);
         self.ready.notify_waiters();
     }
@@ -145,16 +156,17 @@ impl BatchQueue {
         self.ready.notify_waiters();
     }
 
-    /// Remove every deferred-pending item (pass >= 1) from the queue, returning
-    /// their ids. Fresh pass-0 items that merely have not started stay. Removal
-    /// under the lock guarantees exactly-once terminal handling: a drained item
-    /// can no longer be leased, and a leased item is not in the queue to drain.
-    /// Decrements `outstanding` and wakes idle workers so they observe `Done`.
+    /// Remove every deferred item (cooldown- or budget-waiting) from the queue,
+    /// returning their ids. Fresh pass-0 items that merely have not started and
+    /// healthy request-spacing requeues stay. Removal under the lock guarantees
+    /// exactly-once terminal handling: a drained item can no longer be leased,
+    /// and a leased item is not in the queue to drain. Decrements `outstanding`
+    /// and wakes idle workers so they observe `Done`.
     fn drain_deferred(&self) -> Vec<u32> {
         let mut inner = self.inner.lock().unwrap();
         let mut dropped = Vec::new();
         inner.items.retain(|item| {
-            if item.pass >= 1 {
+            if item.deferred {
                 dropped.push(item.id);
                 false
             } else {
@@ -359,22 +371,16 @@ async fn worker_loop(
                 )
                 .await;
 
-                if let BeatmapsetDownloadOutcome::Deferred {
-                    retry_in,
-                    rate_limited,
-                } = outcome
-                {
-                    // Only a rate-limit-sourced defer advances the pass counter and
-                    // can hit the drop cap; a pure request-spacing defer requeues at
-                    // the same pass, so a healthy map (never 429'd, pass 0) is never
-                    // counted toward the cap nor drained as skipped. The future
+                if let BeatmapsetDownloadOutcome::Deferred { retry_in, reason } = outcome {
+                    // Only a reactive cooldown advances the drop-eligibility pass
+                    // counter. A budget defer is bounded by the reset we read from
+                    // the mirror, and a spacing defer is a healthy map waiting for
+                    // a send token; both requeue at the same pass so neither can
+                    // silently consume a map's drop eligibility. The future
                     // `ready_at` still bounds the requeue, so it cannot hot-loop.
-                    let pass = if rate_limited {
-                        item.pass + 1
-                    } else {
-                        item.pass
-                    };
-                    if rate_limited && pass >= DEFERRAL_PASS_CAP {
+                    let cooldown = matches!(reason, DeferReason::Cooldown);
+                    let pass = if cooldown { item.pass + 1 } else { item.pass };
+                    if cooldown && pass >= DEFERRAL_PASS_CAP {
                         let _ = event_tx.send(Event::BeatmapsetSkipped {
                             beatmapset_id: item.id,
                             reason: Skip::RateLimitSkipped,
@@ -385,12 +391,19 @@ async fn worker_loop(
                         });
                         queue.complete();
                     } else {
+                        let deferred = !matches!(reason, DeferReason::Spacing);
                         let _ = event_tx.send(Event::BeatmapsetDeferred {
                             beatmapset_id: item.id,
                             pass,
                             retry_in,
+                            reason,
                         });
-                        queue.requeue(item.id, pass, Instant::now() + retry_in + requeue_jitter());
+                        queue.requeue(
+                            item.id,
+                            pass,
+                            Instant::now() + retry_in + requeue_jitter(),
+                            deferred,
+                        );
                     }
                     continue;
                 }

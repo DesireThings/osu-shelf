@@ -17,7 +17,7 @@ pub use pipeline::{
 pub(crate) use session::{ids_folder_name, selective_folder_name};
 
 pub use crate::config::constants::status;
-pub use osu_downloader::ArchiveValidation;
+pub use osu_downloader::{ArchiveValidation, DeferReason};
 
 use crate::app::collection::FailureReason;
 use crate::config::constants::USER_AGENT;
@@ -321,18 +321,21 @@ pub enum DownloadEvent {
         duration_us: u64,
     },
     /// A beatmapset was deferred by the library: every candidate mirror was
-    /// rate-limited past the inline-wait threshold, so it returned to the queue
-    /// tail instead of parking a worker. The active slot frees and the map
-    /// counts as queued again (never failed / skipped); it retries after
-    /// `retry_in`. Toastless.
+    /// rate-limited or out of budget past the inline-wait threshold, so it
+    /// returned to the queue tail instead of parking a worker. The active slot
+    /// frees and the map counts as queued again (never failed / skipped); it
+    /// retries after `retry_in`. Toastless.
     BeatmapDeferred {
         id: DownloadId,
         beatmapset_id: u32,
-        /// Rate-limit deferral count so far. A pure request-spacing requeue keeps
-        /// the current count (may be 0); only cooling defers increment it.
+        /// Reactive cooldown deferrals so far. A pure request-spacing or budget
+        /// requeue keeps the current count (may be 0); only cooldown defers
+        /// increment it.
         pass: u32,
         /// Time until the earliest candidate mirror frees.
         retry_in: Duration,
+        /// Whether a cooldown, a budget, or plain spacing caused the requeue.
+        reason: DeferReason,
     },
     Finished {
         id: DownloadId,

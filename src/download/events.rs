@@ -139,11 +139,13 @@ pub fn translate_event(id: DownloadId, event: LibEvent, tally: &mut Tally, emit:
             beatmapset_id,
             pass,
             retry_in,
+            reason,
         } => emit(DownloadEvent::BeatmapDeferred {
             id,
             beatmapset_id,
             pass,
             retry_in,
+            reason,
         }),
         LibEvent::BeatmapsetFailed {
             beatmapset_id,
@@ -253,7 +255,7 @@ fn emit_status(id: DownloadId, beatmapset_id: u32, event: Status, emit: Emit<'_>
             false,
             None,
         ),
-        Status::RateLimited { cooldown } => {
+        Status::RateLimited { cooldown, .. } => {
             // Base message ends at "...waiting" with NO number — the live countdown
             // is appended once by `download::rate_limited_item` from `cooldown_until`,
             // so the seconds shown always update (a baked-in number would freeze).

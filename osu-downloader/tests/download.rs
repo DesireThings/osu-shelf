@@ -7,7 +7,7 @@ use super::{
 use crate::config::INLINE_WAIT_MAX;
 use crate::mirrors::pool::MirrorPool;
 use crate::validation::minimal_zip_bytes_for_test;
-use crate::{ArchiveValidation, Mirror, MirrorKind, OnExists, Skip, Status};
+use crate::{ArchiveValidation, DeferReason, Mirror, MirrorKind, OnExists, Skip, Status};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -25,6 +25,10 @@ use std::time::{Duration, Instant};
 fn test_client() -> reqwest::Client {
     reqwest::Client::builder()
         .pool_max_idle_per_host(0)
+        // The download path follows redirects by hand; disabling automatic
+        // redirects here exercises that loop and keeps intermediate headers
+        // visible, exactly as the production client does.
+        .redirect(reqwest::redirect::Policy::none())
         .build()
         .unwrap()
 }
@@ -218,7 +222,7 @@ async fn range_probe_discovers_redirected_download_size() {
     let params = default_params(42, dir.path(), &client, &mirror_pool, cancel_rx);
 
     assert_eq!(
-        probe_download_size(&mirror, &params).await,
+        probe_download_size(&mirror, 0, &params).await,
         Some(10_000_000)
     );
     server.join().unwrap();
@@ -274,9 +278,90 @@ async fn probe_preserves_range_across_multiple_redirects() {
     let params = default_params(997762, dir.path(), &client, &mirror_pool, cancel_rx);
 
     assert_eq!(
-        probe_download_size(&mirror, &params).await,
+        probe_download_size(&mirror, 0, &params).await,
         Some(44_911_016)
     );
+    server.join().unwrap();
+}
+
+#[tokio::test]
+async fn redirect_budget_headers_are_captured_before_the_download_body() {
+    use crate::mirrors::{Acquire, WaitKind};
+    use std::{
+        io::{Read, Write},
+        net::TcpListener,
+        thread,
+    };
+
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let zip = minimal_zip_bytes_for_test();
+    let zip_len = zip.len();
+    let server = thread::spawn(move || {
+        for _ in 0..2 {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0u8; 1024];
+            let n = stream.read(&mut request).unwrap();
+            let request = String::from_utf8_lossy(&request[..n]);
+            if request.starts_with("GET /mirror/") {
+                // The mirror's own response carries the budget headers; the
+                // storage target below does not.
+                stream
+                    .write_all(
+                        format!(
+                            "HTTP/1.1 302 Found\r\nLocation: http://{addr}/archive/42\r\nX-Download-Budget-Remaining: 0\r\nX-Download-Budget-Reset: 3600\r\nContent-Length: 0\r\n\r\n"
+                        )
+                        .as_bytes(),
+                    )
+                    .unwrap();
+            } else if request.starts_with("GET /archive/") {
+                stream
+                    .write_all(
+                        format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Disposition: attachment; filename=42.osz\r\nContent-Length: {zip_len}\r\n\r\n"
+                        )
+                        .as_bytes(),
+                    )
+                    .unwrap();
+                stream.write_all(&zip).unwrap();
+            }
+        }
+    });
+
+    let mirror = Mirror::with_kind_and_template(
+        MirrorKind::OsuDirect,
+        format!("http://{addr}/mirror/{{id}}"),
+    );
+    let mirror_pool = MirrorPool::new(vec![mirror]);
+    let client = test_client();
+    let dir = tempfile::tempdir().unwrap();
+    let (_cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
+
+    let (outcome, _) = download_beatmapset(default_params(
+        42,
+        dir.path(),
+        &client,
+        &mirror_pool,
+        cancel_rx,
+    ))
+    .await;
+
+    assert!(
+        matches!(outcome, BeatmapsetDownloadOutcome::Success { .. }),
+        "redirected download must succeed, got {outcome:?}"
+    );
+
+    let before = Instant::now();
+    let (until, kind) = match mirror_pool.acquire_at(&[0], before) {
+        Acquire::Wait { until, kind } => (until, kind),
+        Acquire::Granted { .. } => panic!("the spent daily budget must block the next request"),
+    };
+    assert_eq!(kind, WaitKind::Budget);
+    assert!(
+        until > before + Duration::from_secs(3_500),
+        "the reset from the mirror's 302 must be honoured, got {until:?}"
+    );
+
     server.join().unwrap();
 }
 
@@ -975,7 +1060,7 @@ async fn long_cooldown_defers_to_the_batch() {
     assert!(matches!(
         outcome,
         BeatmapsetDownloadOutcome::Deferred {
-            rate_limited: true,
+            reason: DeferReason::Cooldown,
             ..
         }
     ));
@@ -1009,7 +1094,7 @@ async fn long_spacing_wait_defers_without_a_rate_limit_flag() {
         matches!(
             outcome,
             BeatmapsetDownloadOutcome::Deferred {
-                rate_limited: false,
+                reason: DeferReason::Spacing,
                 ..
             }
         ),

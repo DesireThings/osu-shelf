@@ -14,6 +14,10 @@ pub(crate) const NETWORK_RETRY_BACKOFF: Duration = Duration::from_secs(5);
 /// longer one returns the map to the batch queue for later retry.
 pub(crate) const INLINE_WAIT_MAX: Duration = Duration::from_secs(2);
 
+/// Maximum redirect hops a mirror download follows by hand. The download client
+/// disables automatic redirects so every hop's budget headers stay visible.
+pub(crate) const MAX_DOWNLOAD_REDIRECTS: usize = 5;
+
 /// Deferral pass cap: a map gets up to this many processing passes (the
 /// initial pass plus 2 requeues); the deferral ending the last pass is dropped
 /// as [`Skip::RateLimitSkipped`](crate::Skip::RateLimitSkipped) instead of
