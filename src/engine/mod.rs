@@ -38,15 +38,15 @@ pub use updates::{ScanProgress, UpdatePick, UpdateReport, Updates};
 /// osu! installs found in their default locations.
 #[derive(Debug, Clone, Serialize)]
 pub struct Installs {
-    /// Folder holding lazer's `client.realm`.
-    pub lazer: Option<PathBuf>,
+    /// Folders holding lazer's `client.realm`, newest first.
+    pub lazer: Vec<PathBuf>,
     /// Folder holding stable's `osu!.db`.
     pub stable: Option<PathBuf>,
 }
 
 pub fn detect_installs() -> Installs {
     Installs {
-        lazer: LazerReader::default_path(),
+        lazer: LazerReader::detected_paths(),
         stable: StableReader::default_path(),
     }
 }

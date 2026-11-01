@@ -6,7 +6,8 @@ import { listen } from "@tauri-apps/api/event";
 export type OsuClient = "lazer" | "stable";
 
 export interface Installs {
-  lazer: string | null;
+  /** Every lazer data folder found, newest first. */
+  lazer: string[];
   stable: string | null;
 }
 

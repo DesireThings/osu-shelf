@@ -1,4 +1,4 @@
-use super::find_lazer_install;
+use super::{find_lazer_install, find_lazer_installs};
 use std::{
     fs::{self, File},
     path::{Path, PathBuf},
@@ -36,6 +36,18 @@ fn the_most_recently_changed_realm_wins() {
         Some(torii.clone())
     );
     assert_eq!(find_lazer_install([torii.clone(), official]), Some(torii));
+}
+
+#[test]
+fn every_detected_install_is_listed_newest_first() {
+    let root = tempfile::tempdir().unwrap();
+    let official = install(root.path(), "osu", 3600);
+    let torii = install(root.path(), "osu-torii", 60);
+
+    assert_eq!(
+        find_lazer_installs([official.clone(), torii.clone()]),
+        vec![torii, official]
+    );
 }
 
 #[test]
@@ -83,5 +95,9 @@ fn a_folder_reached_twice_is_found_once() {
     let official = root.path().join("osu");
     redirect(&official, torii.to_str().unwrap());
 
+    assert_eq!(
+        find_lazer_installs([official.clone(), torii.clone()]),
+        vec![torii.clone()]
+    );
     assert_eq!(find_lazer_install([official, torii.clone()]), Some(torii));
 }

@@ -104,23 +104,32 @@ impl BeatmapReader for LazerReader {
     }
 }
 
-/// Picks lazer's data folder from `candidates`. Each one is first followed
-/// through its `storage.ini` redirect; then the folder whose `client.realm`
-/// changed last wins, so a leftover realm or an install that isn't played any
-/// more doesn't beat the one in use. Ties keep the earlier candidate.
-fn find_lazer_install(candidates: impl IntoIterator<Item = PathBuf>) -> Option<PathBuf> {
-    let mut best: Option<(SystemTime, PathBuf)> = None;
+/// Every lazer data folder found in `candidates`, newest `client.realm` first,
+/// so a leftover realm or an install that isn't played any more doesn't beat
+/// the one in use. Each one is first followed through its `storage.ini`
+/// redirect; a folder reached twice is listed once. Ties keep the earlier
+/// candidate.
+fn find_lazer_installs(candidates: impl IntoIterator<Item = PathBuf>) -> Vec<PathBuf> {
+    let mut found: Vec<(SystemTime, PathBuf)> = Vec::new();
     for candidate in candidates {
         let folder = follow_storage_redirect(candidate);
         let Ok(meta) = fs::metadata(folder.join("client.realm")) else {
             continue;
         };
-        let modified = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
-        if best.as_ref().is_none_or(|(newest, _)| modified > *newest) {
-            best = Some((modified, folder));
+        if found.iter().any(|(_, path)| *path == folder) {
+            continue;
         }
+        let modified = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+        found.push((modified, folder));
     }
-    best.map(|(_, folder)| folder)
+    // Stable sort: equal mtimes keep the earlier candidate's order.
+    found.sort_by_key(|(modified, _)| std::cmp::Reverse(*modified));
+    found.into_iter().map(|(_, folder)| folder).collect()
+}
+
+/// Picks lazer's data folder from `candidates`: the newest one.
+fn find_lazer_install(candidates: impl IntoIterator<Item = PathBuf>) -> Option<PathBuf> {
+    find_lazer_installs(candidates).into_iter().next()
 }
 
 /// The folder lazer actually uses for `folder`: moving the data folder in
@@ -144,6 +153,11 @@ fn follow_storage_redirect(folder: PathBuf) -> PathBuf {
 }
 
 impl LazerReader {
+    /// Every lazer data folder found in the default locations, newest first.
+    pub fn detected_paths() -> Vec<PathBuf> {
+        find_lazer_installs(Self::candidate_paths())
+    }
+
     fn candidate_paths() -> Vec<PathBuf> {
         let mut paths = Vec::new();
 
