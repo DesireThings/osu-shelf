@@ -309,6 +309,13 @@ pub enum DownloadEvent {
         id: DownloadId,
         count: usize,
     },
+    /// The osu! library could not be read while looking for already-imported
+    /// sets, so this run cannot pre-skip them. Surfaced as a warning toast;
+    /// the download still proceeds.
+    LibraryReadFailed {
+        id: DownloadId,
+        message: String,
+    },
     BeatmapVerified {
         id: DownloadId,
         duration_us: u64,

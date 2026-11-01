@@ -172,7 +172,14 @@ async fn run_collection(
     // Resolve the already-imported library set here, off the UI thread, while the
     // tab shows its preparing state. Best-effort: any read error or panic leaves
     // the set empty (download proceeds unfiltered), never aborts the run.
-    let owned_ids = resolve_owned_ids(skip_already_imported, osu_client, osu_path).await;
+    let owned_ids = resolve_owned_ids(
+        id,
+        skip_already_imported,
+        osu_client,
+        osu_path,
+        emit.as_ref(),
+    )
+    .await;
 
     let Some(session) = DownloadSession::prepare(PrepareParams {
         id,
@@ -274,9 +281,11 @@ fn unsatisfied_targets(target_ids: &[u32], verified: &HashSet<u32>) -> Vec<u32> 
 /// disabled, a read error, or a join panic all yield an empty set (the download
 /// then proceeds without pre-skipping) and never abort the run.
 async fn resolve_owned_ids(
+    id: DownloadId,
     skip_already_imported: bool,
     osu_client: OsuClient,
     osu_path: String,
+    emit: Emit<'_>,
 ) -> HashSet<u32> {
     if !skip_already_imported {
         return HashSet::new();
@@ -290,10 +299,20 @@ async fn resolve_owned_ids(
         Ok(Ok(owned)) => owned,
         Ok(Err(err)) => {
             warn!(error = %err, "skip-already-imported: library read failed; not pre-skipping");
+            emit(DownloadEvent::LibraryReadFailed {
+                id,
+                message: format!(
+                    "Couldn't read your osu! library ({err}), so maps you already have weren't skipped."
+                ),
+            });
             HashSet::new()
         }
         Err(err) => {
             warn!(error = %err, "skip-already-imported: library task panicked; not pre-skipping");
+            emit(DownloadEvent::LibraryReadFailed {
+                id,
+                message: "Couldn't read your osu! library (the check stopped unexpectedly), so maps you already have weren't skipped.".to_string(),
+            });
             HashSet::new()
         }
     }
@@ -327,7 +346,14 @@ async fn run_selective(
     emit_resolving(id, emit.as_ref());
 
     // Same off-thread owned-library resolve as `run_collection`; best-effort.
-    let owned_ids = resolve_owned_ids(skip_already_imported, osu_client, osu_path).await;
+    let owned_ids = resolve_owned_ids(
+        id,
+        skip_already_imported,
+        osu_client,
+        osu_path,
+        emit.as_ref(),
+    )
+    .await;
 
     let Some(session) = DownloadSession::prepare(PrepareParams {
         id,
@@ -433,7 +459,14 @@ async fn run_ids(
     emit_resolving(id, emit.as_ref());
 
     // Same off-thread owned-library resolve as `run_collection`; best-effort.
-    let owned_ids = resolve_owned_ids(skip_already_imported, osu_client, osu_path).await;
+    let owned_ids = resolve_owned_ids(
+        id,
+        skip_already_imported,
+        osu_client,
+        osu_path,
+        emit.as_ref(),
+    )
+    .await;
 
     let Some(session) = DownloadSession::prepare(PrepareParams {
         id,

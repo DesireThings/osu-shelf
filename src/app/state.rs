@@ -3004,6 +3004,9 @@ impl App {
                     if count == 1 { "" } else { "s" }
                 ));
             }
+            DownloadEvent::LibraryReadFailed { id: _, message } => {
+                self.toast_warn(message);
+            }
             DownloadEvent::Finished { id, summary } => {
                 self.settle_run(id, |page| {
                     page.stage = DownloadStage::Completed;

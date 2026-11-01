@@ -283,6 +283,10 @@ impl DownloadStatus {
                 self.already_in_osu = *count;
                 false
             }
+            DownloadEvent::LibraryReadFailed { message, .. } => {
+                self.warning = Some(message.clone());
+                true
+            }
             DownloadEvent::FailedMaps { failures, .. } => {
                 self.failures = failures
                     .iter()
