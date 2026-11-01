@@ -3266,7 +3266,7 @@ dependencies = [
 
 [[package]]
 name = "osu-shelf"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "bytes",
  "chrono",
@@ -3309,7 +3309,7 @@ dependencies = [
 
 [[package]]
 name = "osu-shelf-gui"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "osu-shelf",
  "serde",
