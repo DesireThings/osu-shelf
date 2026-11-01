@@ -10,6 +10,7 @@
     type FindCheck,
     type FindCriteria,
     type FindOptions,
+    type FindRow,
   } from "./api";
   import {
     cancel,
@@ -165,6 +166,22 @@
     return `${Math.round(bytes / 1e3)} KB`;
   }
 
+  /** The card's one meta line: mapper, status, stars and so on. */
+  function meta(row: FindRow): string {
+    return [
+      row.creator ? `mapped by ${row.creator}` : null,
+      row.status || null,
+      stars(row.stars),
+      row.difficulties > 0
+        ? `${plural(row.difficulties, "difficulty", "difficulties")}${f.route === "nzbasic" ? " matching" : ""}`
+        : null,
+      row.favourites !== null ? `♥ ${row.favourites.toLocaleString()}` : null,
+      row.size ? size(row.size) : null,
+    ]
+      .filter((part): part is string => part !== null)
+      .join(" · ");
+  }
+
   const textFields: { key: TextKey; label: string; hint: string }[] = [
     { key: "stars", label: "Stars", hint: "7+  or  5.5..7" },
     { key: "ar", label: "AR", hint: "9+" },
@@ -195,259 +212,303 @@
   <p class="muted">Loading…</p>
 {:else}
   {@const c = f.criteria}
-  <form
-    class="card"
-    onsubmit={(e) => {
-      e.preventDefault();
-      if (canSearch) search();
-    }}
-  >
-    <div class="add-row">
-      <input
-        class="text-input"
-        bind:value={c.query}
-        placeholder="Artist, title, mapper, tags…"
-        aria-label="Search text"
-      />
-      <button class="primary" type="submit" disabled={!canSearch}>
-        {f.searching ? "Searching…" : "Find"}
-      </button>
-    </div>
+  <div class="find-layout">
+    <div class="find-form-col">
+      <form
+        class="card find-form"
+        onsubmit={(e) => {
+          e.preventDefault();
+          if (canSearch) search();
+        }}
+      >
+        <div class="add-row">
+          <input
+            class="text-input"
+            bind:value={c.query}
+            placeholder="Artist, title, mapper, tags…"
+            aria-label="Search text"
+          />
+          <button class="primary" type="submit" disabled={!canSearch}>
+            {f.searching ? "Searching…" : "Find"}
+          </button>
+        </div>
 
-    <div class="selects">
-      <label class="field">
-        <span class="field-label">Preset</span>
-        <select value={c.preset} onchange={pickPreset}>
-          {#each options.presets as label, i (label)}<option value={i}>{label}</option>{/each}
-        </select>
-      </label>
-      <label class="field">
-        <span class="field-label">Mode</span>
-        <select bind:value={c.mode}>
-          {#each options.modes as label, i (label)}<option value={i}>{label}</option>{/each}
-        </select>
-      </label>
-      <label class="field">
-        <span class="field-label">Status</span>
-        <select bind:value={c.status}>
-          {#each options.statuses as label, i (label)}<option value={i}>{label}</option>{/each}
-        </select>
-      </label>
-      <label class="field">
-        <span class="field-label">Sort</span>
-        <select bind:value={c.sort}>
-          {#each options.sorts as label, i (label)}<option value={i}>{label}</option>{/each}
-        </select>
-      </label>
-    </div>
-
-    {#if checked}
-      {#if checked.problem}
-        <p class="error-text small">{checked.problem}</p>
-      {:else if needsApiApp}
-        <p class="warn-text small">
-          This search goes to osu!, which needs your own osu! API app.
-          <button type="button" class="link" onclick={onSettings}>Add it in Settings</button>
-          or use a nzbasic-only filter (Special, or sort by BPM or length).
-        </p>
-      {:else if checked.route === "osu"}
-        <p class="muted small">Searches osu! with your API app.</p>
-      {:else}
-        <p class="muted small">
-          Searches nzbasic's map database (no account needed).
-          {#if c.sort === relevanceSort}Relevance there means newest ranked first.{/if}
-        </p>
-      {/if}
-    {/if}
-    {#if f.error}
-      <p class="error-text small">{f.error}</p>
-    {/if}
-    <button type="button" class="link more" onclick={() => (moreOpen = !moreOpen)}>
-      {moreOpen ? "Fewer filters" : "More filters"}{#if !moreOpen && advancedSet > 0}&nbsp;({advancedSet} set){/if}
-    </button>
-
-    {#if moreOpen}
-      <div class="grid">
-        {#each textFields as field (field.key)}
+        <div class="selects">
           <label class="field">
-            <span class="field-label">{field.label}</span>
-            <input class="text-input" bind:value={c[field.key]} placeholder={field.hint} />
+            <span class="field-label">Preset</span>
+            <select value={c.preset} onchange={pickPreset}>
+              {#each options.presets as label, i (label)}<option value={i}>{label}</option>{/each}
+            </select>
           </label>
-        {/each}
-        <label class="field">
-          <span class="field-label">Special (nzbasic)</span>
-          <select bind:value={c.special}>
-            {#each options.specials as label, i (label)}<option value={i}>{label}</option>{/each}
-          </select>
-        </label>
-        <label class="field">
-          <span class="field-label">Explicit</span>
-          <select bind:value={c.explicit}>
-            {#each options.explicit as label, i (label)}<option value={i}>{label}</option>{/each}
-          </select>
-        </label>
-        <label class="field">
-          <span class="field-label">Genre</span>
-          <select bind:value={c.genre}>
-            {#each options.genres as label, i (label)}<option value={i}>{label}</option>{/each}
-          </select>
-        </label>
-        <label class="field">
-          <span class="field-label">Language</span>
-          <select bind:value={c.language}>
-            {#each options.languages as label, i (label)}<option value={i}>{label}</option>{/each}
-          </select>
-        </label>
-        <label class="field">
-          <span class="field-label">Max results (nzbasic)</span>
-          <input class="text-input" bind:value={c.limit} placeholder="500" />
-        </label>
-        <div class="field">
-          <span class="field-label">Has</span>
-          <div class="checks">
-            {#each options.extras as label, i (label)}
-              <label class="check">
-                <input type="checkbox" checked={c.extra.includes(i)} onchange={() => toggleExtra(i)} />
-                {label}
+          <label class="field">
+            <span class="field-label">Mode</span>
+            <select bind:value={c.mode}>
+              {#each options.modes as label, i (label)}<option value={i}>{label}</option>{/each}
+            </select>
+          </label>
+          <label class="field">
+            <span class="field-label">Status</span>
+            <select bind:value={c.status}>
+              {#each options.statuses as label, i (label)}<option value={i}>{label}</option>{/each}
+            </select>
+          </label>
+          <label class="field">
+            <span class="field-label">Sort</span>
+            <select bind:value={c.sort}>
+              {#each options.sorts as label, i (label)}<option value={i}>{label}</option>{/each}
+            </select>
+          </label>
+        </div>
+
+        {#if checked}
+          {#if checked.problem}
+            <p class="error-text small">{checked.problem}</p>
+          {:else if needsApiApp}
+            <p class="warn-text small">
+              This search goes to osu!, which needs your own osu! API app.
+              <button type="button" class="link" onclick={onSettings}>Add it in Settings</button>
+              or use a nzbasic-only filter (Special, or sort by BPM or length).
+            </p>
+          {:else if checked.route === "osu"}
+            <p class="muted small">Searches osu! with your API app.</p>
+          {:else}
+            <p class="muted small">
+              Searches nzbasic's map database (no account needed).
+              {#if c.sort === relevanceSort}Relevance there means newest ranked first.{/if}
+            </p>
+          {/if}
+        {/if}
+        {#if f.error}
+          <p class="error-text small">{f.error}</p>
+        {/if}
+        <button type="button" class="link more" onclick={() => (moreOpen = !moreOpen)}>
+          {moreOpen ? "Fewer filters" : "More filters"}{#if !moreOpen && advancedSet > 0}&nbsp;({advancedSet} set){/if}
+        </button>
+
+        {#if moreOpen}
+          <div class="grid">
+            {#each textFields as field (field.key)}
+              <label class="field">
+                <span class="field-label">{field.label}</span>
+                <input class="text-input" bind:value={c[field.key]} placeholder={field.hint} />
               </label>
             {/each}
-          </div>
-        </div>
-      </div>
-      <p class="muted small">
-        Numbers: <code>7</code>, <code>7+</code>, <code>&lt;7</code> or a range <code>5.5..7</code>.
-        Artist, mapper and title match the whole phrase on osu!, any part on nzbasic.
-      </p>
-    {/if}
-
-  </form>
-
-  {#if f.searched && !f.searching}
-    {#if f.rows.length === 0}
-      <section class="card"><p class="muted">No maps match. Try fewer filters.</p></section>
-    {:else}
-      <section class="card results">
-        <div class="results-head">
-          <h2>
-            {shownCount < f.total
-              ? `Showing ${shownCount.toLocaleString()} of ${plural(f.total, "result", "results")}`
-              : plural(shownCount, "result", "results")}
-          </h2>
-          <div class="actions">
-            <label class="check small">
-              <input type="checkbox" bind:checked={f.hideOwned} />
-              Hide maps I already have{#if f.hideOwned && hiddenCount > 0}&nbsp;({hiddenCount.toLocaleString()} hidden){/if}
+            <label class="field">
+              <span class="field-label">Special (nzbasic)</span>
+              <select bind:value={c.special}>
+                {#each options.specials as label, i (label)}<option value={i}>{label}</option>{/each}
+              </select>
             </label>
-            <button class="secondary" onclick={() => (f.picked = visibleRows.map((r) => r.id))}>Tick all</button>
-            <button class="secondary" onclick={() => (f.picked = [])}>Untick all</button>
+            <label class="field">
+              <span class="field-label">Explicit</span>
+              <select bind:value={c.explicit}>
+                {#each options.explicit as label, i (label)}<option value={i}>{label}</option>{/each}
+              </select>
+            </label>
+            <label class="field">
+              <span class="field-label">Genre</span>
+              <select bind:value={c.genre}>
+                {#each options.genres as label, i (label)}<option value={i}>{label}</option>{/each}
+              </select>
+            </label>
+            <label class="field">
+              <span class="field-label">Language</span>
+              <select bind:value={c.language}>
+                {#each options.languages as label, i (label)}<option value={i}>{label}</option>{/each}
+              </select>
+            </label>
+            <label class="field">
+              <span class="field-label">Max results (nzbasic)</span>
+              <input class="text-input" bind:value={c.limit} placeholder="500" />
+            </label>
+            <div class="field">
+              <span class="field-label">Has</span>
+              <div class="checks">
+                {#each options.extras as label, i (label)}
+                  <label class="check">
+                    <input type="checkbox" checked={c.extra.includes(i)} onchange={() => toggleExtra(i)} />
+                    {label}
+                  </label>
+                {/each}
+              </div>
+            </div>
           </div>
-        </div>
-        <ul class="rows">
-          {#each visibleRows as row (row.id)}
-            {@const owned = have(row.id)}
-            <li class:have-osu={owned === "osu"} class:have-downloaded={owned === "downloaded"}>
-              <label class="row">
-                <input type="checkbox" checked={f.picked.includes(row.id)} onchange={() => togglePicked(row.id)} />
-                <img
-                  class="cover"
-                  src="https://assets.ppy.sh/beatmaps/{row.id}/covers/list.jpg"
-                  alt=""
-                  loading="lazy"
-                  onerror={(e) => ((e.currentTarget as HTMLImageElement).style.visibility = "hidden")}
-                />
-                <span class="row-main">
-                  <span class="row-title">
-                    {row.title ? `${row.artist} – ${row.title}` : `Map set ${row.id}`}
+          <p class="muted small">
+            Numbers: <code>7</code>, <code>7+</code>, <code>&lt;7</code> or a range <code>5.5..7</code>.
+            Artist, mapper and title match the whole phrase on osu!, any part on nzbasic.
+          </p>
+        {/if}
+
+      </form>
+    </div>
+
+    <div class="find-results-col">
+
+      {#if f.searching}
+        <section class="card"><p class="muted">Searching…</p></section>
+      {:else if !f.searched}
+        <p class="muted small placeholder">Results will appear here.</p>
+      {:else if f.rows.length === 0}
+        <section class="card"><p class="muted">No maps match. Try fewer filters.</p></section>
+      {:else}
+        <section class="card results">
+          <div class="results-head">
+            <h2>
+              {shownCount < f.total
+                ? `Showing ${shownCount.toLocaleString()} of ${plural(f.total, "result", "results")}`
+                : plural(shownCount, "result", "results")}
+            </h2>
+            <div class="actions">
+              <label class="check small">
+                <input type="checkbox" bind:checked={f.hideOwned} />
+                Hide maps I already have{#if f.hideOwned && hiddenCount > 0}&nbsp;({hiddenCount.toLocaleString()} hidden){/if}
+              </label>
+              <button class="secondary" onclick={() => (f.picked = visibleRows.map((r) => r.id))}>Tick all</button>
+              <button class="secondary" onclick={() => (f.picked = [])}>Untick all</button>
+            </div>
+          </div>
+          <ul class="map-grid">
+            {#each visibleRows as row (row.id)}
+              {@const owned = have(row.id)}
+              {@const ticked = f.picked.includes(row.id)}
+              <li
+                class="map-card"
+                class:picked={ticked}
+                class:have-osu={owned === "osu"}
+                class:have-downloaded={owned === "downloaded"}
+              >
+                <label class="map-pick">
+                  <span class="cover-wrap">
+                    <img
+                      class="cover"
+                      src="https://assets.ppy.sh/beatmaps/{row.id}/covers/card.jpg"
+                      srcset="https://assets.ppy.sh/beatmaps/{row.id}/covers/card.jpg 1x, https://assets.ppy.sh/beatmaps/{row.id}/covers/card@2x.jpg 2x"
+                      alt=""
+                      loading="lazy"
+                      decoding="async"
+                      onerror={(e) => ((e.currentTarget as HTMLImageElement).style.visibility = "hidden")}
+                    />
+                    <span class="tick">
+                      <input type="checkbox" checked={ticked} onchange={() => togglePicked(row.id)} />
+                    </span>
                     {#if owned === "osu"}
                       <span class="tag tag-osu">In osu!</span>
                     {:else if owned === "downloaded"}
                       <span class="tag tag-downloaded" title="In your download folder; import it to play it">Downloaded</span>
                     {/if}
                   </span>
-                  <span class="muted small">
-                    {#if row.creator}mapped by {row.creator}{/if}
-                    {#if row.status}· {row.status}{/if}
-                    {#if stars(row.stars)}· {stars(row.stars)}{/if}
-                    {#if row.difficulties > 0}
-                      · {plural(row.difficulties, "difficulty", "difficulties")}{f.route === "nzbasic" ? " matching" : ""}
-                    {/if}
-                    {#if row.favourites !== null}· ♥ {row.favourites.toLocaleString()}{/if}
-                    {#if row.size}· {size(row.size)}{/if}
+                  <span class="map-body">
+                    <span class="map-title">{row.title ? `${row.artist} – ${row.title}` : `Map set ${row.id}`}</span>
+                    <span class="muted small map-meta">{meta(row)}</span>
                   </span>
+                </label>
+                <span class="map-foot">
+                  <button class="link" onclick={() => openUrl(`https://osu.ppy.sh/beatmapsets/${row.id}`)}>
+                    osu! page
+                  </button>
                 </span>
-              </label>
-              <button class="link" onclick={() => openUrl(`https://osu.ppy.sh/beatmapsets/${row.id}`)}>
-                osu! page
+              </li>
+            {/each}
+          </ul>
+          {#if visibleRows.length === 0}
+            <p class="muted small">You already have every map shown here.</p>
+          {/if}
+          {#if f.owned?.library_error}
+            <p class="muted small">
+              Couldn't read your osu! library, so only downloaded maps are marked: {f.owned.library_error}
+            </p>
+          {/if}
+          {#if f.nextCursor}
+            <div class="actions left">
+              <button class="secondary" onclick={loadMore} disabled={f.loadingMore}>
+                {f.loadingMore ? "Loading…" : "Load more"}
               </button>
-            </li>
-          {/each}
-        </ul>
-        {#if visibleRows.length === 0}
-          <p class="muted small">You already have every map shown here.</p>
-        {/if}
-        {#if f.owned?.library_error}
-          <p class="muted small">
-            Couldn't read your osu! library, so only downloaded maps are marked: {f.owned.library_error}
-          </p>
-        {/if}
-        {#if f.nextCursor}
-          <div class="actions left">
-            <button class="secondary" onclick={loadMore} disabled={f.loadingMore}>
-              {f.loadingMore ? "Loading…" : "Load more"}
-            </button>
-          </div>
-        {/if}
-      </section>
+            </div>
+          {/if}
+        </section>
+      {/if}
 
-      <div class="actions download-bar">
-        {#if f.downloadError}
-          <p class="error-text small">{f.downloadError}</p>
-        {:else if runLine}
-          <p class="muted small">
-            {runLine} · <button class="link" onclick={showRun}>Show progress</button>
-          </p>
-        {:else if pickedCount === 0}
-          <p class="muted small">Tick the map sets you want.</p>
-        {/if}
-        <button class="primary" onclick={startDownload} disabled={pickedCount === 0}>
-          Download {plural(pickedCount, "map set", "map sets")}{#if pickedSize > 0}&nbsp;(about {size(pickedSize)}){/if}
-        </button>
-      </div>
-    {/if}
-  {/if}
-
-  {#if run}
-    <section class="card" bind:this={runCard}>
-      <div class="entry">
-        <div class="entry-main">
-          <span class="entry-title">Search “{run.name}”</span>
-        </div>
-        {#if running}
-          <div class="entry-buttons">
-            <button class="secondary" onclick={() => cancel(run)}>Cancel</button>
+      {#if run}
+        <section class="card run-card" bind:this={runCard}>
+          <div class="entry">
+            <div class="entry-main">
+              <span class="entry-title">Search “{run.name}”</span>
+            </div>
+            {#if running}
+              <div class="entry-buttons">
+                <button class="secondary" onclick={() => cancel(run)}>Cancel</button>
+              </div>
+            {/if}
           </div>
-        {/if}
-      </div>
-      <DownloadProgress status={run} />
-      {#if run.phase === "done"}
-        <div class="actions left">
-          <button class="primary" onclick={onImport}>Continue to import</button>
+          <DownloadProgress status={run} />
+          {#if run.phase === "done"}
+            <div class="actions left">
+              <button class="primary" onclick={onImport}>Continue to import</button>
+            </div>
+          {/if}
+        </section>
+      {/if}
+
+      {#if f.searched && !f.searching && f.rows.length > 0}
+        <div class="actions download-bar">
+          {#if f.downloadError}
+            <p class="error-text small">{f.downloadError}</p>
+          {:else if runLine}
+            <p class="muted small">
+              {runLine} · <button class="link" onclick={showRun}>Show progress</button>
+            </p>
+          {:else if pickedCount === 0}
+            <p class="muted small">Tick the map sets you want.</p>
+          {/if}
+          <button class="primary" onclick={startDownload} disabled={pickedCount === 0}>
+            Download {plural(pickedCount, "map set", "map sets")}{#if pickedSize > 0}&nbsp;(about {size(pickedSize)}){/if}
+          </button>
         </div>
       {/if}
-    </section>
-  {/if}
+    </div>
+  </div>
 {/if}
 
 <style>
+  .find-layout {
+    display: grid;
+    gap: 20px;
+  }
+  .find-form-col,
+  .find-results-col {
+    min-width: 0;
+  }
+  .find-results-col {
+    display: flex;
+    flex-direction: column;
+  }
+  .find-form {
+    margin-bottom: 0;
+  }
+  @container (min-width: 1000px) {
+    .find-layout {
+      grid-template-columns: minmax(300px, 360px) minmax(0, 1fr);
+      align-items: start;
+    }
+    .find-form-col {
+      position: sticky;
+      top: 24px;
+      max-height: calc(100vh - 48px);
+      overflow-y: auto;
+    }
+  }
+  .placeholder {
+    padding: 8px 4px;
+  }
   .selects {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
     gap: 10px;
     margin-top: 12px;
   }
   .grid {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(125px, 1fr));
     gap: 10px;
     margin-top: 10px;
   }
@@ -491,75 +552,125 @@
   .results-head .actions {
     margin-top: 0;
   }
-  .rows {
+  .map-grid {
     list-style: none;
-    margin: 10px 0 0;
+    margin: 12px 0 0;
     padding: 0;
-    display: flex;
-    flex-direction: column;
-  }
-  .rows li {
-    display: flex;
-    align-items: center;
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(min(100%, 220px), 1fr));
     gap: 12px;
-    padding: 8px 0;
-    border-top: 1px solid var(--border);
   }
-  .row {
-    flex: 1;
-    display: flex;
-    align-items: flex-start;
-    gap: 10px;
-    cursor: pointer;
-    min-width: 0;
-  }
-  .row input {
-    margin-top: 4px;
-  }
-  .cover {
-    width: 44px;
-    height: 44px;
-    flex: none;
-    border-radius: 6px;
-    object-fit: cover;
-    background: var(--border);
-  }
-  .download-bar {
-    position: sticky;
-    bottom: 0;
-    padding: 12px 0;
-    background: var(--bg);
-  }
-  .row-main {
+  .map-card {
+    position: relative;
     display: flex;
     flex-direction: column;
     min-width: 0;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--surface);
   }
-  .row-title {
-    font-weight: 600;
-    overflow-wrap: anywhere;
+  .map-card.picked,
+  .map-card:focus-within {
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
   }
   /* Maps the user already has: a coloured edge and a tag, like osu!'s own listing. */
-  .rows li.have-osu,
-  .rows li.have-downloaded {
-    padding-left: 10px;
-    box-shadow: inset 3px 0 0 var(--have);
-  }
-  .rows li.have-osu {
+  .map-card.have-osu {
     --have: var(--ok);
   }
-  .rows li.have-downloaded {
+  .map-card.have-downloaded {
     --have: var(--warn);
   }
+  .map-card.have-osu::before,
+  .map-card.have-downloaded::before {
+    content: "";
+    position: absolute;
+    inset: 0 auto 0 0;
+    width: 3px;
+    background: var(--have);
+    border-radius: var(--radius) 0 0 var(--radius);
+    z-index: 2;
+  }
+  .map-pick {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    min-width: 0;
+    cursor: pointer;
+  }
+  .cover-wrap {
+    position: relative;
+    display: block;
+    aspect-ratio: 400 / 140;
+    background: var(--surface-2);
+    border-radius: calc(var(--radius) - 1px) calc(var(--radius) - 1px) 0 0;
+    overflow: hidden;
+  }
+  .cover {
+    display: block;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+  }
+  .tick {
+    position: absolute;
+    top: 8px;
+    left: 8px;
+    display: grid;
+    place-items: center;
+    width: 26px;
+    height: 26px;
+    border-radius: 6px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    box-shadow: 0 1px 4px rgb(0 0 0 / 0.25);
+  }
+  .tick input {
+    margin: 0;
+    accent-color: var(--accent);
+    cursor: pointer;
+  }
+  .map-body {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    gap: 3px;
+    min-width: 0;
+    padding: 10px 12px 0;
+  }
+  .map-title {
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    overflow: hidden;
+    font-weight: 600;
+    font-size: 0.92rem;
+    line-height: 1.35;
+    overflow-wrap: anywhere;
+  }
+  .map-meta {
+    line-height: 1.4;
+  }
+  .map-foot {
+    display: flex;
+    justify-content: flex-end;
+    padding: 4px 12px 8px;
+  }
+  /* The tags sit over the cover, so they need their own background. */
   .tag {
     display: inline-block;
-    margin-left: 6px;
     padding: 0 7px;
     border-radius: 999px;
     font-size: 0.75rem;
     font-weight: 600;
-    vertical-align: 1px;
+    background: var(--surface);
     border: 1px solid currentColor;
+  }
+  .cover-wrap .tag {
+    position: absolute;
+    top: 8px;
+    right: 8px;
   }
   .tag-osu {
     color: var(--ok);
@@ -569,5 +680,15 @@
   }
   .results-head .check {
     color: var(--muted);
+  }
+  .download-bar {
+    position: sticky;
+    bottom: 0;
+    z-index: 3;
+    padding: 12px 0;
+    background: var(--bg);
+  }
+  .run-card {
+    scroll-margin-bottom: 96px;
   }
 </style>
