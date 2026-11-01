@@ -4,15 +4,16 @@
 //! translated into the public [`DownloadEvent`](crate::DownloadEvent) stream there.
 
 use crate::{
-    config::{TRANSIENT_RETRY_ATTEMPTS, TRANSIENT_RETRY_BASE_DELAY},
+    config::{MAX_DOWNLOAD_REDIRECTS, TRANSIENT_RETRY_ATTEMPTS, TRANSIENT_RETRY_BASE_DELAY},
     downloader::OnExists,
     envelope,
-    event::{Skip, Status},
-    mirrors::{Acquire, Mirror, MirrorKind, MirrorPool, MirrorRef},
+    event::{DeferReason, RateLimitKind, Skip, Status},
+    mirrors::{Acquire, Mirror, MirrorKind, MirrorPool, MirrorRef, WaitKind},
     output_entry::parse_beatmapset_filename,
     validation::{self, ArchiveValidation},
     worker::stream_download,
 };
+use reqwest::header::LOCATION;
 use std::{
     collections::HashSet,
     future::{Future, pending},
@@ -57,14 +58,12 @@ pub(crate) enum BeatmapsetDownloadOutcome {
         reason: String,
     },
     /// The map was handed back to the batch queue for a later pass; nothing
-    /// terminal yet. `rate_limited` is `true` when a cooldown drove the defer (a
-    /// long cooldown, a caller defer, or the auto-defer budget) and `false` for a
-    /// pure request-spacing defer. Only rate-limit-sourced defers advance the
-    /// batch pass counter and become drop-eligible; a spacing defer requeues at
-    /// the same pass so a healthy map that never 429'd is never dropped.
+    /// terminal yet. `reason` distinguishes a healthy spacing requeue from a
+    /// cooldown or budget wait; only cooldown defers advance the batch pass
+    /// counter and become drop-eligible.
     Deferred {
         retry_in: Duration,
-        rate_limited: bool,
+        reason: DeferReason,
     },
     Aborted,
 }
@@ -322,9 +321,22 @@ pub(crate) async fn download_beatmapset(
         }
 
         match params.mirror_pool.acquire(&candidates) {
-            Acquire::Granted(idx) => {
+            Acquire::Granted {
+                idx,
+                reserved_bytes,
+            } => {
                 let mirror = &mirrors[idx];
-                match try_mirror_retry(mirror, idx, &params, &mut total_attempts).await {
+                let attempt = try_mirror_retry(mirror, idx, &params, &mut total_attempts).await;
+                let completed_bytes = match &attempt {
+                    MirrorAttempt::Done(BeatmapsetDownloadOutcome::Success {
+                        size_bytes, ..
+                    }) => Some(*size_bytes),
+                    _ => None,
+                };
+                params
+                    .mirror_pool
+                    .finish_attempt(idx, reserved_bytes, completed_bytes);
+                match attempt {
                     MirrorAttempt::Done(outcome) => {
                         if matches!(outcome, BeatmapsetDownloadOutcome::Success { .. }) {
                             params.mirror_pool.on_success(idx);
@@ -359,23 +371,23 @@ pub(crate) async fn download_beatmapset(
                     }
                 }
             }
-            Acquire::Wait { until, cooling } => {
+            Acquire::Wait { until, kind } => {
                 let now = Instant::now();
                 let wait = until.saturating_duration_since(now);
                 if wait > params.inline_wait_max {
-                    // A cooldown-bound wait is rate-limit-sourced; a spacing-bound
-                    // one is a healthy map waiting for a send token and must not
-                    // count toward the drop-eligibility pass counter.
+                    // A cooldown- or budget-bound wait is rate-limit-sourced; a
+                    // spacing-bound one is a healthy map waiting for a send token
+                    // and must not count toward the drop-eligibility pass counter.
                     return (
                         BeatmapsetDownloadOutcome::Deferred {
                             retry_in: wait,
-                            rate_limited: cooling,
+                            reason: defer_reason(kind),
                         },
                         total_attempts,
                     );
                 }
 
-                if !cooling {
+                if !kind.is_limited() {
                     // Plain request spacing: the map is healthy, so the
                     // rate-limit defer/drop signals must not touch it and the
                     // wait never counts toward the auto-defer budget. Only
@@ -386,15 +398,21 @@ pub(crate) async fn download_beatmapset(
                     continue;
                 }
 
-                // A cooldown gates this map, so it is no longer purely
+                // A cooldown or budget gates this map, so it is no longer purely
                 // transient — this keeps the accumulator off the
                 // `all_transient` NetworkError path and its debug_assert.
                 all_transient = false;
-                emit_status(&params.callbacks, Status::RateLimited { cooldown: wait });
+                emit_status(
+                    &params.callbacks,
+                    Status::RateLimited {
+                        cooldown: wait,
+                        kind: rate_limit_kind(kind),
+                    },
+                );
 
-                // The auto-defer budget counts only these cooldown waits; a
-                // budget smaller than the cooldown caps the sleep so it is
-                // honored to the second.
+                // The auto-defer budget counts these cooldown/budget waits; a
+                // budget smaller than the wait caps the sleep so it is honored
+                // to the second.
                 let (sleep_for, budget_exhausted) = match params
                     .rate_limit_skip_after
                     .map(|budget| budget.saturating_sub(cumulative_rate_limit))
@@ -426,7 +444,7 @@ pub(crate) async fn download_beatmapset(
                         return (
                             BeatmapsetDownloadOutcome::Deferred {
                                 retry_in: wait,
-                                rate_limited: true,
+                                reason: defer_reason(kind),
                             },
                             total_attempts,
                         );
@@ -440,7 +458,7 @@ pub(crate) async fn download_beatmapset(
                             return (
                                 BeatmapsetDownloadOutcome::Deferred {
                                     retry_in: wait.saturating_sub(sleep_for),
-                                    rate_limited: true,
+                                    reason: defer_reason(kind),
                                 },
                                 total_attempts,
                             );
@@ -553,6 +571,10 @@ async fn try_mirror_retry(
         }
 
         *total_attempts += 1;
+        if retry > 0 {
+            // Every transient retry is another request the mirror counts.
+            params.mirror_pool.note_request(idx);
+        }
         let outcome = try_mirror_once(mirror, idx, params).await;
 
         match outcome {
@@ -640,62 +662,100 @@ async fn try_mirror_once(
 
     // The scheduler already spaced this send by granting a token, so no
     // client-side throttle is needed here.
-    let url = mirror.url_for(params.beatmapset_id);
-    let mut request = params.client.get(&url);
-    if let Some(headers) = mirror.headers() {
-        request = request.headers(headers.clone());
-    }
+    let Ok(mut url) = reqwest::Url::parse(&mirror.url_for(params.beatmapset_id)) else {
+        return MirrorAttempt::Definitive("invalid mirror URL".to_string());
+    };
+    let original = url.clone();
 
     #[cfg(feature = "instrument")]
     let sent = Instant::now();
 
-    let Some(response) = run_cancelable(request.send(), &params.cancel_rx).await else {
-        return MirrorAttempt::Done(BeatmapsetDownloadOutcome::Aborted);
-    };
-    let response = match response {
-        Ok(response) => response,
-        Err(err) if err.is_timeout() => {
-            #[cfg(feature = "instrument")]
-            record_attempt(
-                params,
-                mirror,
-                idx,
-                crate::instrument::AttemptOutcome::Transient,
-                None,
-                None,
-                sent.elapsed(),
-            );
-            return MirrorAttempt::Transient("connection timeout".to_string());
+    let mut redirects = 0usize;
+    let response = loop {
+        let mut request = params.client.get(url.clone());
+        // Only the mirror's own origin gets its headers. A redirect to a CDN
+        // must not receive the osu! bearer token (or any other secret) on the
+        // way out.
+        if same_origin(&url, &original)
+            && let Some(headers) = mirror.headers()
+        {
+            request = request.headers(headers.clone());
         }
-        Err(err) if err.is_connect() => {
-            #[cfg(feature = "instrument")]
-            record_attempt(
-                params,
-                mirror,
-                idx,
-                crate::instrument::AttemptOutcome::Transient,
-                None,
-                None,
-                sent.elapsed(),
-            );
-            return MirrorAttempt::Transient("connection failed".to_string());
+
+        let Some(response) = run_cancelable(request.send(), &params.cancel_rx).await else {
+            return MirrorAttempt::Done(BeatmapsetDownloadOutcome::Aborted);
+        };
+        let response = match response {
+            Ok(response) => response,
+            Err(err) if err.is_timeout() => {
+                #[cfg(feature = "instrument")]
+                record_attempt(
+                    params,
+                    mirror,
+                    idx,
+                    crate::instrument::AttemptOutcome::Transient,
+                    None,
+                    None,
+                    sent.elapsed(),
+                );
+                return MirrorAttempt::Transient("connection timeout".to_string());
+            }
+            Err(err) if err.is_connect() => {
+                #[cfg(feature = "instrument")]
+                record_attempt(
+                    params,
+                    mirror,
+                    idx,
+                    crate::instrument::AttemptOutcome::Transient,
+                    None,
+                    None,
+                    sent.elapsed(),
+                );
+                return MirrorAttempt::Transient("connection failed".to_string());
+            }
+            Err(err) => {
+                #[cfg(feature = "instrument")]
+                record_attempt(
+                    params,
+                    mirror,
+                    idx,
+                    crate::instrument::AttemptOutcome::Transient,
+                    None,
+                    None,
+                    sent.elapsed(),
+                );
+                return MirrorAttempt::Transient(format!(
+                    "request failed on {}: {err}",
+                    mirror.kind().label()
+                ));
+            }
+        };
+
+        // Budget headers live on the mirror's own response, including the 302
+        // to its storage host; fold them in before deciding anything else.
+        params.mirror_pool.observe_headers(idx, response.headers());
+
+        if response.status().is_redirection() {
+            if redirects >= MAX_DOWNLOAD_REDIRECTS {
+                return MirrorAttempt::Definitive("too many redirects".to_string());
+            }
+            let Some(next) = response
+                .headers()
+                .get(LOCATION)
+                .and_then(|value| value.to_str().ok())
+                .and_then(|location| url.join(location).ok())
+            else {
+                return MirrorAttempt::Definitive("redirect without a valid Location".to_string());
+            };
+            if !matches!(next.scheme(), "http" | "https") {
+                return MirrorAttempt::Definitive("redirect to an unsupported scheme".to_string());
+            }
+            redirects += 1;
+            url = next;
+            continue;
         }
-        Err(err) => {
-            #[cfg(feature = "instrument")]
-            record_attempt(
-                params,
-                mirror,
-                idx,
-                crate::instrument::AttemptOutcome::Transient,
-                None,
-                None,
-                sent.elapsed(),
-            );
-            return MirrorAttempt::Transient(format!(
-                "request failed on {}: {err}",
-                mirror.kind().label()
-            ));
-        }
+
+        break response;
     };
 
     #[cfg(feature = "instrument")]
@@ -760,7 +820,7 @@ async fn try_mirror_once(
     }
 
     let probed_size = if response.content_length().is_none() {
-        probe_download_size(mirror, params).await
+        probe_download_size(mirror, idx, params).await
     } else {
         None
     };
@@ -817,17 +877,26 @@ async fn try_mirror_once(
     }
 }
 
-async fn probe_download_size(mirror: &Mirror, params: &DownloadParams<'_>) -> Option<u64> {
-    let mut url = mirror.url_for(params.beatmapset_id);
+async fn probe_download_size(
+    mirror: &Mirror,
+    idx: usize,
+    params: &DownloadParams<'_>,
+) -> Option<u64> {
+    let mut url = reqwest::Url::parse(&mirror.url_for(params.beatmapset_id)).ok()?;
+    let original = url.clone();
+    // The probe is a real request; count it against the mirror's budgets.
+    params.mirror_pool.note_request(idx);
 
     for _ in 0..=SIZE_PROBE_REDIRECT_LIMIT {
         let mut request = params
             .client
-            .get(&url)
+            .get(url.clone())
             .header(reqwest::header::RANGE, "bytes=0-0")
             .header(reqwest::header::ACCEPT_ENCODING, "identity")
             .header(reqwest::header::CONNECTION, "close");
-        if let Some(headers) = mirror.headers() {
+        if same_origin(&url, &original)
+            && let Some(headers) = mirror.headers()
+        {
             request = request.headers(headers.clone());
         }
 
@@ -840,13 +909,18 @@ async fn probe_download_size(mirror: &Mirror, params: &DownloadParams<'_>) -> Op
             }
         };
 
+        params.mirror_pool.observe_headers(idx, response.headers());
+
         if response.status().is_redirection() {
             let location = response
                 .headers()
                 .get(reqwest::header::LOCATION)
                 .and_then(|value| value.to_str().ok())
-                .and_then(|location| response.url().join(location).ok())?;
-            url = location.to_string();
+                .and_then(|location| url.join(location).ok())?;
+            if !matches!(location.scheme(), "http" | "https") {
+                return None;
+            }
+            url = location;
             continue;
         }
 
@@ -854,6 +928,15 @@ async fn probe_download_size(mirror: &Mirror, params: &DownloadParams<'_>) -> Op
     }
 
     None
+}
+
+/// Whether two URLs share a scheme, host and port. Mirror headers (including
+/// the osu! bearer token) are only sent to the mirror's own origin, never to a
+/// redirect target on another host.
+fn same_origin(a: &reqwest::Url, b: &reqwest::Url) -> bool {
+    a.scheme() == b.scheme()
+        && a.host_str() == b.host_str()
+        && a.port_or_known_default() == b.port_or_known_default()
 }
 
 fn size_from_headers(headers: &reqwest::header::HeaderMap) -> Option<u64> {
@@ -1219,6 +1302,22 @@ fn failed(mirror: Option<MirrorKind>, reason: impl Into<String>) -> BeatmapsetDo
 fn emit_status(callbacks: &BeatmapsetDownloadCallbacks, event: Status) {
     if let Some(callback) = &callbacks.status {
         callback(event);
+    }
+}
+
+fn defer_reason(kind: WaitKind) -> DeferReason {
+    match kind {
+        WaitKind::Spacing => DeferReason::Spacing,
+        WaitKind::Cooldown => DeferReason::Cooldown,
+        WaitKind::Budget => DeferReason::Budget,
+    }
+}
+
+fn rate_limit_kind(kind: WaitKind) -> RateLimitKind {
+    match kind {
+        WaitKind::Cooldown => RateLimitKind::Cooldown,
+        WaitKind::Budget => RateLimitKind::Budget,
+        WaitKind::Spacing => unreachable!("spacing waits are not rate limits"),
     }
 }
 

@@ -81,6 +81,42 @@ fn drain_deferred_passes(event_rx: &mut mpsc::UnboundedReceiver<Event>) -> Vec<u
     passes
 }
 
+#[test]
+fn drain_deferred_drops_a_pass_zero_budget_item() {
+    // A budget deferral requeues at the same pass (the reset, not a reactive
+    // cooldown, bounds it), but it is still genuinely waiting: the hard drop
+    // must reach it.
+    let queue = BatchQueue::new(&[10]);
+    let now = Instant::now();
+    let leased = match queue.lease(now) {
+        Lease::Work(item) => item,
+        _ => panic!("expected work"),
+    };
+    queue.requeue(leased.id, leased.pass, now + Duration::from_secs(60), true);
+
+    assert_eq!(queue.drain_deferred(), vec![10]);
+}
+
+#[test]
+fn a_spacing_requeue_survives_the_hard_drop() {
+    let queue = BatchQueue::new(&[10]);
+    let now = Instant::now();
+    let leased = match queue.lease(now) {
+        Lease::Work(item) => item,
+        _ => panic!("expected work"),
+    };
+    queue.requeue(leased.id, leased.pass, now, false);
+
+    assert!(queue.drain_deferred().is_empty());
+    let survivor = match queue.lease(now) {
+        Lease::Work(item) => item,
+        _ => panic!("a spacing requeue is healthy and must stay queued"),
+    };
+    assert_eq!(survivor.id, 10);
+    queue.complete();
+    assert!(matches!(queue.lease(now), Lease::Done));
+}
+
 #[tokio::test]
 async fn cancel_mid_batch_does_not_panic() {
     let dir = tempfile::tempdir().unwrap();
@@ -186,7 +222,12 @@ fn drain_deferred_drops_requeued_items_and_keeps_fresh_ones() {
         _ => panic!("expected work"),
     };
     assert_eq!(leased.id, 10);
-    queue.requeue(leased.id, leased.pass + 1, now + Duration::from_secs(60));
+    queue.requeue(
+        leased.id,
+        leased.pass + 1,
+        now + Duration::from_secs(60),
+        true,
+    );
 
     assert_eq!(queue.drain_deferred(), vec![10]);
     // The fresh pass-0 item must survive the drain and stay leasable.

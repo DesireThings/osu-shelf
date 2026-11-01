@@ -71,18 +71,20 @@ pub enum Event {
     },
 
     /// A beatmapset was deferred: every candidate mirror was busy for longer than
-    /// the inline-wait threshold (all cooling, or all send-tokens spent), so it
-    /// was returned to the queue tail instead of parking a worker. It will be
-    /// retried after `retry_in`. The active row frees; the caller moves the tally
-    /// back to queued.
+    /// the inline-wait threshold (all cooling, all budget-blocked, or all send-
+    /// tokens spent), so it was returned to the queue tail instead of parking a
+    /// worker. It will be retried after `retry_in`. The active row frees; the
+    /// caller moves the tally back to queued.
     BeatmapsetDeferred {
         /// Beatmapset ID.
         beatmapset_id: u32,
         /// Rate-limit deferral count so far. A pure request-spacing requeue keeps
-        /// the current count (may be 0); only cooling defers increment it.
+        /// the current count (may be 0); only cooldown defers increment it.
         pass: u32,
         /// Time until the earliest candidate mirror frees.
         retry_in: Duration,
+        /// What made every candidate busy.
+        reason: DeferReason,
     },
 
     /// Session has finished.
@@ -117,6 +119,8 @@ pub enum Status {
     RateLimited {
         /// Cooldown before any rate-limited mirror becomes eligible again.
         cooldown: Duration,
+        /// Whether the wait is a reactive 429 penalty or a budget reset.
+        kind: RateLimitKind,
     },
     /// A transient error will be retried on the same mirror.
     RetryingTransient {
@@ -129,6 +133,26 @@ pub enum Status {
         /// Failure reason.
         reason: String,
     },
+}
+
+/// Why a rate-limit status is being reported.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RateLimitKind {
+    /// A reactive 429 penalty.
+    Cooldown,
+    /// A request or byte budget with no room until its reset.
+    Budget,
+}
+
+/// Why a beatmapset was returned to the batch queue.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeferReason {
+    /// A healthy map waiting for a free send token.
+    Spacing,
+    /// A reactive 429 cooldown.
+    Cooldown,
+    /// A request or byte budget with no room until its reset.
+    Budget,
 }
 
 /// Reason a beatmapset was skipped.

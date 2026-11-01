@@ -1,6 +1,8 @@
+mod limits;
 pub(crate) mod pool;
 
-pub(crate) use pool::{Acquire, MirrorPool};
+pub(crate) use limits::LimitPolicy;
+pub(crate) use pool::{Acquire, MirrorPool, WaitKind};
 
 use crate::error::{Error, Result};
 use reqwest::header::HeaderMap;
@@ -234,6 +236,18 @@ impl MirrorKind {
             other => {
                 Duration::from_secs(other.meta().expect("builtin mirror has meta").backoff_secs)
             }
+        }
+    }
+
+    /// Request and byte budgets for this mirror. The header families are read
+    /// for every kind; the per-kind policy decides what one request costs and
+    /// which fixed quota (if any) applies when no headers are published.
+    pub(crate) fn limit_policy(&self) -> LimitPolicy {
+        match self {
+            MirrorKind::Catboy => LimitPolicy::catboy(),
+            MirrorKind::OsuDirect => LimitPolicy::osu_direct(),
+            MirrorKind::OsuApi => LimitPolicy::osu_api(),
+            _ => LimitPolicy::simple(),
         }
     }
 

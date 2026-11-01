@@ -11,7 +11,9 @@ pub(crate) const DEFAULT_API_TIMEOUT: Duration = Duration::from_secs(15);
 pub(crate) fn create_download_client(user_agent: Option<String>) -> Result<reqwest::Client> {
     let mut builder = reqwest::Client::builder()
         .connect_timeout(DEFAULT_DOWNLOAD_CONNECT_TIMEOUT)
-        .redirect(reqwest::redirect::Policy::limited(5))
+        // Redirects are followed by hand in `download::try_mirror_once` so the
+        // mirror's budget headers on its own 30x response stay visible.
+        .redirect(reqwest::redirect::Policy::none())
         .pool_max_idle_per_host(10);
 
     if let Some(ua) = user_agent {

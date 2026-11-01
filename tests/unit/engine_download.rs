@@ -4,8 +4,8 @@ use super::{
 use crate::app::{HomeTab, collection::FailureReason};
 use crate::config::Config;
 use crate::download::{
-    BeatmapStage, DownloadConfig, DownloadEvent, DownloadHandle, DownloadStage, DownloadSummary,
-    FailedMap, SelectiveDownloadRequest,
+    BeatmapStage, DeferReason, DownloadConfig, DownloadEvent, DownloadHandle, DownloadStage,
+    DownloadSummary, FailedMap, SelectiveDownloadRequest,
 };
 use crate::osu_db::OsuClient;
 use std::collections::HashMap;
@@ -113,6 +113,7 @@ fn deferred(set: u32, retry_in_secs: u64) -> DownloadEvent {
         beatmapset_id: set,
         pass: 1,
         retry_in: Duration::from_secs(retry_in_secs),
+        reason: DeferReason::Cooldown,
     }
 }
 
@@ -179,9 +180,27 @@ fn a_healthy_set_waiting_its_turn_is_not_held_back_by_a_busy_mirror() {
         beatmapset_id: 10,
         pass: 0,
         retry_in: Duration::from_secs(2),
+        reason: DeferReason::Spacing,
     });
 
     assert_eq!((s.active, s.waiting), (0, 0));
+}
+
+#[test]
+fn a_budget_deferred_set_at_pass_zero_waits() {
+    let mut s = status();
+    s.apply(&beatmap(BeatmapStage::Downloading, 10));
+
+    s.apply(&DownloadEvent::BeatmapDeferred {
+        id: 1,
+        beatmapset_id: 10,
+        pass: 0,
+        retry_in: Duration::from_secs(600),
+        reason: DeferReason::Budget,
+    });
+
+    assert_eq!((s.active, s.waiting), (0, 1));
+    assert_eq!(s.retry_in_secs, Some(600));
 }
 
 #[test]

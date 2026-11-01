@@ -10,7 +10,10 @@ use crate::download::{
     SelectiveDownloadCollection, selective_folder_name,
 };
 use crate::osu_db::OsuClient;
-use osu_downloader::{Event as LibEvent, Mirror, MirrorKind, MirrorRef, OnExists, Skip, Status};
+use osu_downloader::{
+    DeferReason, Event as LibEvent, Mirror, MirrorKind, MirrorRef, OnExists, RateLimitKind, Skip,
+    Status,
+};
 use std::{
     collections::{HashMap, HashSet},
     path::{Path, PathBuf},
@@ -144,6 +147,7 @@ fn deferred_map_emits_deferred_event_and_touches_no_tally() {
         beatmapset_id: 42,
         pass: 2,
         retry_in: std::time::Duration::from_secs(30),
+        reason: DeferReason::Cooldown,
     }]);
 
     // Deferred is a soft requeue: nothing counted, so the map stays "queued".
@@ -354,7 +358,10 @@ fn emit_status_messages_match_format_output() {
             rate_limited,
             cooldown_until,
             ..
-        } = drive_status(Status::RateLimited { cooldown })
+        } = drive_status(Status::RateLimited {
+            cooldown,
+            kind: RateLimitKind::Cooldown,
+        })
         else {
             panic!("expected BeatmapStatus");
         };
@@ -398,7 +405,10 @@ fn only_newly_downloaded_hashes_are_included() {
 fn rate_limited_status_forwards_cooldown_until() {
     let cooldown = std::time::Duration::from_secs(30);
     let before = std::time::Instant::now();
-    let event = drive_status(Status::RateLimited { cooldown });
+    let event = drive_status(Status::RateLimited {
+        cooldown,
+        kind: RateLimitKind::Cooldown,
+    });
     let after = std::time::Instant::now();
 
     let DownloadEvent::BeatmapStatus {

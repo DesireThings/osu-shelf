@@ -1,20 +1,36 @@
-use super::{Acquire, INTERVAL_DECAY, MirrorPool, RETRY_AFTER_MAX, RETRY_AFTER_MIN};
+use super::{Acquire, INTERVAL_DECAY, MirrorPool, RETRY_AFTER_MAX, RETRY_AFTER_MIN, WaitKind};
 use crate::{Mirror, MirrorKind};
+use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use std::time::{Duration, Instant};
 
 fn granted(a: Acquire) -> usize {
     match a {
-        Acquire::Granted(idx) => idx,
+        Acquire::Granted { idx, .. } => idx,
         Acquire::Wait { .. } => panic!("expected a grant, got wait"),
     }
 }
 
-fn waited(a: Acquire) -> (Instant, bool) {
+fn waited(a: Acquire) -> (Instant, WaitKind) {
     match a {
-        Acquire::Wait { until, cooling } => (until, cooling),
-        Acquire::Granted(idx) => panic!("expected a wait, got grant of {idx}"),
+        Acquire::Wait { until, kind } => (until, kind),
+        Acquire::Granted { idx, .. } => panic!("expected a wait, got grant of {idx}"),
     }
 }
+
+fn headers(entries: &[(&'static str, &'static str)]) -> HeaderMap {
+    let mut map = HeaderMap::new();
+    for (name, value) in entries {
+        map.insert(
+            HeaderName::from_static(name),
+            HeaderValue::from_static(value),
+        );
+    }
+    map
+}
+
+/// Arbitrary fixed Unix time; only used by tests whose reset values are
+/// seconds-from-now, so the absolute value does not matter.
+const TEST_UNIX: u64 = 1_700_000_000;
 
 fn base_cooldown() -> Duration {
     MirrorKind::Nerinyan.rate_limit_backoff()
@@ -37,8 +53,8 @@ fn grant_consumes_token_for_the_interval_window() {
     let base = MirrorKind::Nerinyan.base_request_interval();
     let now = Instant::now();
     assert_eq!(granted(pool.acquire_at(&[0], now)), 0);
-    let (until, cooling) = waited(pool.acquire_at(&[0], now));
-    assert!(!cooling, "a spent token is a spacing wait, not a cooldown");
+    let (until, kind) = waited(pool.acquire_at(&[0], now));
+    assert_eq!(kind, WaitKind::Spacing, "a spent token is a spacing wait");
     assert_eq!(until, now + base);
 }
 
@@ -49,7 +65,7 @@ fn concurrent_acquire_at_one_instant_grants_one_token() {
     let pool = MirrorPool::new(vec![Mirror::nerinyan()]);
     let now = Instant::now();
     let grants = (0..16)
-        .filter(|_| matches!(pool.acquire_at(&[0], now), Acquire::Granted(_)))
+        .filter(|_| matches!(pool.acquire_at(&[0], now), Acquire::Granted { .. }))
         .count();
     assert_eq!(grants, 1);
 }
@@ -61,8 +77,8 @@ fn acquire_spills_to_next_slot_when_first_token_is_spent() {
     assert_eq!(granted(pool.acquire_at(&[0, 1], now)), 0);
     assert_eq!(granted(pool.acquire_at(&[0, 1], now)), 1);
     // Both tokens spent at this instant.
-    let (_until, cooling) = waited(pool.acquire_at(&[0, 1], now));
-    assert!(!cooling);
+    let (_until, kind) = waited(pool.acquire_at(&[0, 1], now));
+    assert_eq!(kind, WaitKind::Spacing);
 }
 
 #[test]
@@ -70,8 +86,8 @@ fn cooldown_blocks_admission_and_reports_cooling() {
     let pool = MirrorPool::new(vec![Mirror::nerinyan()]);
     let now = Instant::now();
     pool.mark_rate_limited_at(0, None, now);
-    let (until, cooling) = waited(pool.acquire_at(&[0], now));
-    assert!(cooling);
+    let (until, kind) = waited(pool.acquire_at(&[0], now));
+    assert_eq!(kind, WaitKind::Cooldown);
     assert_eq!(until, now + base_cooldown());
 }
 
@@ -169,9 +185,10 @@ fn cooling_is_reported_when_cooldown_is_out_sat_by_spacing() {
     assert_eq!(granted(pool.acquire_at(&[0], now)), 0);
     // A 0.5 s cooldown expires before that spacing token frees.
     pool.mark_rate_limited_at(0, Some(Duration::from_millis(500)), now);
-    let (until, cooling) = waited(pool.acquire_at(&[0], now));
-    assert!(
-        cooling,
+    let (until, kind) = waited(pool.acquire_at(&[0], now));
+    assert_eq!(
+        kind,
+        WaitKind::Cooldown,
         "a live cooldown makes the wait cooling even when spacing is the later bound"
     );
     assert_eq!(
@@ -256,4 +273,207 @@ fn mirrors_preserves_order_and_duplicates() {
             MirrorKind::Nerinyan,
         ]
     );
+}
+
+#[test]
+fn catboy_units_gate_the_next_download_before_a_429() {
+    // catboy charges 20 quota units per download. A response reporting 60
+    // units therefore admits three downloads, not sixty, and the fourth waits
+    // for the reset instead of provoking a 429.
+    let pool = MirrorPool::new(vec![Mirror::with_kind_and_template(
+        MirrorKind::Catboy,
+        "http://catboy.test/d/{id}",
+    )]);
+    let now = Instant::now();
+    pool.observe_headers_at(
+        0,
+        &headers(&[("x-ratelimit-remaining", "60"), ("x-ratelimit-reset", "30")]),
+        now,
+        TEST_UNIX,
+    );
+
+    assert_eq!(granted(pool.acquire_at(&[0], now)), 0);
+    assert_eq!(
+        granted(pool.acquire_at(&[0], now + Duration::from_millis(2))),
+        0
+    );
+    assert_eq!(
+        granted(pool.acquire_at(&[0], now + Duration::from_millis(4))),
+        0
+    );
+
+    let (until, kind) = waited(pool.acquire_at(&[0], now + Duration::from_millis(6)));
+    assert_eq!(kind, WaitKind::Budget);
+    assert_eq!(until, now + Duration::from_secs(30));
+
+    // The stale zero is discarded once the reset passes; the next request
+    // probes the server again.
+    assert_eq!(
+        granted(pool.acquire_at(
+            &[0],
+            now + Duration::from_secs(30) + Duration::from_millis(1)
+        )),
+        0
+    );
+}
+
+#[test]
+fn catboy_stops_with_a_two_unit_remainder() {
+    let pool = MirrorPool::new(vec![Mirror::with_kind_and_template(
+        MirrorKind::Catboy,
+        "http://catboy.test/d/{id}",
+    )]);
+    let now = Instant::now();
+    pool.observe_headers_at(
+        0,
+        &headers(&[("x-ratelimit-remaining", "19"), ("x-ratelimit-reset", "30")]),
+        now,
+        TEST_UNIX,
+    );
+
+    let (until, kind) = waited(pool.acquire_at(&[0], now));
+    assert_eq!(kind, WaitKind::Budget);
+    assert_eq!(until, now + Duration::from_secs(30));
+}
+
+#[test]
+fn burst_budget_is_a_separate_constraint() {
+    let pool = MirrorPool::new(vec![Mirror::with_kind_and_template(
+        MirrorKind::Catboy,
+        "http://catboy.test/d/{id}",
+    )]);
+    let now = Instant::now();
+    pool.observe_headers_at(
+        0,
+        &headers(&[
+            ("x-ratelimit-remaining", "1000"),
+            ("x-ratelimit-reset", "60"),
+            ("x-ratelimit-burst-remaining", "1"),
+            ("x-ratelimit-burst-reset", "5"),
+        ]),
+        now,
+        TEST_UNIX,
+    );
+
+    assert_eq!(granted(pool.acquire_at(&[0], now)), 0);
+    let (until, kind) = waited(pool.acquire_at(&[0], now + Duration::from_millis(2)));
+    assert_eq!(kind, WaitKind::Budget);
+    assert_eq!(until, now + Duration::from_secs(5));
+}
+
+#[test]
+fn osu_direct_daily_budgets_block_before_the_last_block_of_bytes() {
+    let pool = MirrorPool::new(vec![Mirror::with_kind_and_template(
+        MirrorKind::OsuDirect,
+        "http://osu.direct.test/d/{id}",
+    )]);
+    let now = Instant::now();
+    // Seed the per-set estimate before the byte budget is known, then report
+    // 80 MiB left. One 12 MiB set plus the 64 MiB reserve still fits; the next
+    // one does not once the reservation is in flight.
+    pool.finish_attempt(0, 0, Some(12 * 1024 * 1024));
+    pool.observe_headers_at(
+        0,
+        &headers(&[
+            ("x-download-budget-remaining", "10"),
+            ("x-download-budget-reset", "3600"),
+            ("x-download-budget-bytes-remaining", "83886080"),
+            ("x-download-budget-bytes-reset", "3600"),
+        ]),
+        now,
+        TEST_UNIX,
+    );
+
+    assert_eq!(granted(pool.acquire_at(&[0], now)), 0);
+    let (until, kind) = waited(pool.acquire_at(&[0], now + Duration::from_millis(2)));
+    assert_eq!(kind, WaitKind::Budget);
+    assert_eq!(until, now + Duration::from_secs(3600));
+
+    // Releasing the reservation (the attempt produced no archive) lets the
+    // next request through again.
+    pool.finish_attempt(0, 12 * 1024 * 1024, None);
+    assert_eq!(
+        granted(pool.acquire_at(&[0], now + Duration::from_millis(4))),
+        0
+    );
+}
+
+#[test]
+fn static_osu_api_quota_blocks_the_eleventh_hourly_download() {
+    let pool = MirrorPool::new(vec![Mirror::osu_api()]);
+    let now = Instant::now();
+    for i in 0..10 {
+        assert_eq!(
+            granted(pool.acquire_at(&[0], now + Duration::from_millis(i * 2))),
+            0
+        );
+    }
+
+    let (until, kind) = waited(pool.acquire_at(&[0], now + Duration::from_millis(20)));
+    assert_eq!(kind, WaitKind::Budget);
+    assert_eq!(until, now + Duration::from_secs(3600));
+
+    assert_eq!(
+        granted(pool.acquire_at(
+            &[0],
+            now + Duration::from_secs(3600) + Duration::from_millis(1)
+        )),
+        0
+    );
+}
+
+#[test]
+fn a_reset_already_in_the_past_does_not_block() {
+    let pool = MirrorPool::new(vec![Mirror::with_kind_and_template(
+        MirrorKind::Catboy,
+        "http://catboy.test/d/{id}",
+    )]);
+    let now = Instant::now();
+    pool.observe_headers_at(
+        0,
+        &headers(&[("x-ratelimit-remaining", "0"), ("x-ratelimit-reset", "0")]),
+        now,
+        TEST_UNIX,
+    );
+
+    assert_eq!(granted(pool.acquire_at(&[0], now)), 0);
+}
+
+#[test]
+fn malformed_budget_headers_are_ignored() {
+    let pool = MirrorPool::new(vec![Mirror::with_kind_and_template(
+        MirrorKind::Catboy,
+        "http://catboy.test/d/{id}",
+    )]);
+    let now = Instant::now();
+    pool.observe_headers_at(
+        0,
+        &headers(&[
+            ("x-ratelimit-remaining", "lots"),
+            ("x-ratelimit-reset", "soon"),
+        ]),
+        now,
+        TEST_UNIX,
+    );
+
+    assert_eq!(granted(pool.acquire_at(&[0], now)), 0);
+}
+
+#[test]
+fn header_budgets_are_per_slot() {
+    let pool = MirrorPool::new(vec![
+        Mirror::with_kind_and_template(MirrorKind::Catboy, "http://a.test/d/{id}"),
+        Mirror::with_kind_and_template(MirrorKind::Catboy, "http://b.test/d/{id}"),
+    ]);
+    let now = Instant::now();
+    pool.observe_headers_at(
+        0,
+        &headers(&[("x-ratelimit-remaining", "19"), ("x-ratelimit-reset", "30")]),
+        now,
+        TEST_UNIX,
+    );
+
+    assert_eq!(granted(pool.acquire_at(&[1], now)), 1);
+    let (_until, kind) = waited(pool.acquire_at(&[0], now));
+    assert_eq!(kind, WaitKind::Budget);
 }

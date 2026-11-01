@@ -248,12 +248,17 @@ async fn run(args: Args) -> Result<(), String> {
                     Event::BeatmapsetStatus { beatmapset_id, .. } => {
                         active.insert(beatmapset_id);
                     }
-                    Event::BeatmapsetDeferred { beatmapset_id, pass, retry_in } => {
+                    Event::BeatmapsetDeferred {
+                        beatmapset_id,
+                        pass,
+                        retry_in,
+                        reason,
+                    } => {
                         active.remove(&beatmapset_id);
                         deferred_pending.insert(beatmapset_id);
                         write_line(&writer, format!(
                             "{{\"event\":\"deferred\",\"ts_ms\":{ts_ms},\"beatmapset_id\":{beatmapset_id},\
-                             \"pass\":{pass},\"retry_in_ms\":{}}}",
+                             \"pass\":{pass},\"retry_in_ms\":{},\"reason\":\"{reason:?}\"}}",
                             retry_in.as_millis(),
                         ));
                     }
