@@ -166,12 +166,22 @@ code {
 }
 
 .content {
-  padding: 32px 40px;
+  padding: clamp(20px, 2.5vw, 48px);
   width: 100%;
+  min-width: 0;
+}
+
+/* Pages pick their own width: reading pages stay a comfortable column, Find
+   and Settings use the whole window. The container queries in those pages
+   size off the space actually available, not the window: the sidebar takes
+   260px above 1000px and none below it. */
+.page {
   max-width: 1080px;
-  /* Centred in the space beside the sidebar, so a maximised window doesn't
-     leave everything pinned to the left with a wide empty right side. */
-  margin: 0 auto;
+  margin-inline: auto;
+  container-type: inline-size;
+}
+.page-wide {
+  max-width: none;
 }
 .page-head {
   margin-bottom: 20px;
@@ -440,16 +450,54 @@ button.link {
   color: var(--danger);
 }
 
-@media (max-width: 900px) {
+@media (max-width: 1000px) {
   .shell {
     grid-template-columns: 1fr;
   }
+  /* A sticky full-height sidebar would push every page a screen down at the
+     820px minimum, so it becomes a compact top bar instead. */
   .sidebar {
     border-right: none;
     border-bottom: 1px solid var(--border);
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    height: auto;
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 12px;
+    overflow: visible;
+  }
+  .brand {
+    display: none;
+  }
+  .steps {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .step {
+    width: auto;
+    align-items: center;
+    padding: 6px 8px;
+  }
+  .sidebar .hint,
+  .group-label,
+  .unofficial {
+    display: none;
+  }
+  .settings-link {
+    margin-top: 0;
+  }
+  .num {
+    width: 22px;
+    height: 22px;
+    font-size: 0.8rem;
   }
   .content {
-    padding: 24px 16px;
+    padding: 20px 16px;
   }
   .choice-row {
     grid-template-columns: 1fr;

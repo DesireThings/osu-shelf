@@ -121,25 +121,27 @@
   </nav>
 
   <main class="content">
-    {#if loadError}
-      <div class="card error">
-        <h2>Couldn't start</h2>
-        <p>{loadError}</p>
-      </div>
-    {:else if !settings || !installs}
-      <p class="muted">Loading…</p>
-    {:else if page === "setup"}
-      <Setup bind:settings {installs} onDone={() => (page = "collections")} />
-    {:else if page === "collections"}
-      <Collections onNext={() => (page = "import")} />
-    {:else if page === "import"}
-      <Import {settings} />
-    {:else if page === "find"}
-      <Find onSettings={() => (page = "settings")} onImport={() => (page = "import")} />
-    {:else if page === "update"}
-      <Update {settings} onImport={() => (page = "import")} />
-    {:else}
-      <SettingsPage />
-    {/if}
+    <div class="page" class:page-wide={page === "find" || page === "settings"}>
+      {#if loadError}
+        <div class="card error">
+          <h2>Couldn't start</h2>
+          <p>{loadError}</p>
+        </div>
+      {:else if !settings || !installs}
+        <p class="muted">Loading…</p>
+      {:else if page === "setup"}
+        <Setup bind:settings {installs} onDone={() => (page = "collections")} />
+      {:else if page === "collections"}
+        <Collections onNext={() => (page = "import")} />
+      {:else if page === "import"}
+        <Import {settings} />
+      {:else if page === "find"}
+        <Find onSettings={() => (page = "settings")} onImport={() => (page = "import")} />
+      {:else if page === "update"}
+        <Update {settings} onImport={() => (page = "import")} />
+      {:else}
+        <SettingsPage />
+      {/if}
+    </div>
   </main>
 </div>
