@@ -13,8 +13,8 @@ use crate::{
     config::{Config, MirrorConfig, load_config_or_default},
     download::{
         BeatmapStage, DeferReason, DownloadConfig, DownloadEvent, DownloadHandle, DownloadId,
-        DownloadRequest, DownloadStage, IdsDownloadRequest, SelectiveDownloadRequest,
-        spawn_download, spawn_ids_download, spawn_selective_download,
+        DownloadRequest, DownloadStage, IdsDownloadRequest, SchedulerHandle,
+        SelectiveDownloadRequest, spawn_download, spawn_ids_download, spawn_selective_download,
     },
     mirrors::{Mirror, MirrorKind},
     osu_db::{BeatmapReader, LazerReader, OsuClient, StableReader},
@@ -113,6 +113,10 @@ pub struct DownloadStatus {
     pub warning: Option<String>,
     /// Folder the collection's maps go into, once known.
     pub folder: Option<String>,
+    /// Latest mirror-schedule forecast for the run. Diagnostics only for now:
+    /// kept out of the frontend payload until the UI consumes an ETA.
+    #[serde(skip)]
+    pub schedule: Option<osu_downloader::Schedule>,
     #[serde(skip)]
     finished_bytes: u64,
     #[serde(skip)]
@@ -151,6 +155,7 @@ impl DownloadStatus {
             error: None,
             warning: None,
             folder: None,
+            schedule: None,
             finished_bytes: 0,
             in_flight: HashMap::new(),
             active_sets: HashSet::new(),
@@ -270,6 +275,10 @@ impl DownloadStatus {
                 self.refresh_waiting();
                 false
             }
+            DownloadEvent::Schedule { schedule, .. } => {
+                self.schedule = Some(schedule.clone());
+                false
+            }
             DownloadEvent::OverallProgress {
                 downloaded,
                 skipped,
@@ -357,6 +366,7 @@ impl DownloadStatus {
         self.in_flight.clear();
         self.active_sets.clear();
         self.deferred.clear();
+        self.schedule = None;
         self.active = 0;
         self.refresh_bytes();
         self.refresh_waiting();
@@ -441,6 +451,8 @@ pub(super) fn run_settings(config: &Config) -> Result<RunSettings> {
             archive_validation: config.download.archive_validation,
             auto_skip_rate_limited: config.download.auto_skip_rate_limited,
             rate_limit_skip_secs: config.download.rate_limit_skip_secs,
+            // `Downloads` injects its shared handle when the job is queued.
+            scheduler: None,
         },
         skip_already_imported: config.download.skip_already_imported,
         osu_client: settings.client,
@@ -470,6 +482,19 @@ enum Job {
     Find(IdsDownloadRequest),
 }
 
+impl Job {
+    /// Point the run at the queue's shared scheduler, so mirror spacing and
+    /// budgets carry across consecutive runs.
+    fn with_scheduler(mut self, scheduler: &SchedulerHandle) -> Self {
+        match &mut self {
+            Self::Collection(request) => request.config.scheduler = Some(scheduler.clone()),
+            Self::Update(request) => request.config.scheduler = Some(scheduler.clone()),
+            Self::Find(request) => request.config.scheduler = Some(scheduler.clone()),
+        }
+        self
+    }
+}
+
 /// Called with a run's status whenever it changes (throttled while downloading).
 pub type OnUpdate = Arc<dyn Fn(&DownloadStatus) + Send + Sync>;
 
@@ -490,6 +515,9 @@ struct Inner {
 pub struct Downloads {
     inner: Arc<Mutex<Inner>>,
     on_update: OnUpdate,
+    /// One scheduler handle for every run this queue starts, so a mirror's
+    /// spacing and budget state survives from one run to the next.
+    scheduler: SchedulerHandle,
 }
 
 impl Downloads {
@@ -500,6 +528,7 @@ impl Downloads {
                 runs: BTreeMap::new(),
             })),
             on_update,
+            scheduler: SchedulerHandle::new(),
         }
     }
 
@@ -562,6 +591,7 @@ impl Downloads {
         job: Job,
         clash: impl Fn(&DownloadStatus) -> Option<&'static str>,
     ) -> Result<DownloadId> {
+        let job = job.with_scheduler(&self.scheduler);
         {
             let mut inner = self.inner.lock().expect("downloads lock");
             if let Some(message) = inner

@@ -41,6 +41,7 @@ fn test_config() -> DownloadConfig {
         archive_validation: ArchiveValidation::Off,
         auto_skip_rate_limited: false,
         rate_limit_skip_secs: 60,
+        scheduler: None,
     }
 }
 

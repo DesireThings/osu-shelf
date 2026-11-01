@@ -1595,6 +1595,8 @@ impl HomeTab {
             archive_validation,
             auto_skip_rate_limited,
             rate_limit_skip_secs,
+            // The runtime dispatch injects the app's shared scheduler handle.
+            scheduler: None,
         };
 
         Ok(DownloadRequest {

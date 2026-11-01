@@ -464,6 +464,7 @@ async fn prepare_collection_run(
         archive_validation: ArchiveValidation::Off,
         auto_skip_rate_limited: false,
         rate_limit_skip_secs: 60,
+        scheduler: None,
     };
     let events = Mutex::new(Vec::new());
     let emit = |event: DownloadEvent| events.lock().unwrap().push(event);

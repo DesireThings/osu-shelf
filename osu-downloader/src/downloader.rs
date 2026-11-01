@@ -40,6 +40,7 @@ pub struct DownloaderBuilder {
     sanitize_filenames: bool,
     on_exists: OnExists,
     rate_limit_skip_after: Option<Duration>,
+    scheduler: Option<crate::SchedulerHandle>,
     #[cfg(feature = "instrument")]
     attempt_observer: Option<crate::instrument::AttemptObserver>,
     #[cfg(any(test, feature = "test-helpers"))]
@@ -59,6 +60,7 @@ impl DownloaderBuilder {
             sanitize_filenames: true,
             on_exists: OnExists::Skip,
             rate_limit_skip_after: None,
+            scheduler: None,
             #[cfg(feature = "instrument")]
             attempt_observer: None,
             #[cfg(any(test, feature = "test-helpers"))]
@@ -160,6 +162,16 @@ impl DownloaderBuilder {
         self
     }
 
+    /// Share mirror spacing and budget state with other runs through
+    /// `scheduler`. Without a handle every run starts with a fresh scheduler;
+    /// with one shared handle, a mirror's spacing, live 429 cooldown and
+    /// server-reported budgets carry across runs and pace concurrent sessions.
+    #[must_use]
+    pub fn scheduler(mut self, scheduler: crate::SchedulerHandle) -> Self {
+        self.scheduler = Some(scheduler);
+        self
+    }
+
     /// Attach a per-attempt observer (`instrument` feature). It receives one
     /// [`AttemptRecord`](crate::instrument::AttemptRecord) per HTTP attempt,
     /// for fitting the scheduler's timing constants.
@@ -217,10 +229,15 @@ impl DownloaderBuilder {
         #[cfg(not(any(test, feature = "test-helpers")))]
         let http_client = http::create_download_client(Some(config.user_agent.clone()))?;
 
+        let mirror_pool = match self.scheduler {
+            Some(scheduler) => MirrorPool::with_scheduler(self.mirrors, scheduler),
+            None => MirrorPool::new(self.mirrors),
+        };
+
         Ok(Downloader {
             config: Arc::new(config),
             http_client,
-            mirror_pool: Arc::new(MirrorPool::new(self.mirrors)),
+            mirror_pool: Arc::new(mirror_pool),
         })
     }
 }

@@ -61,6 +61,7 @@ impl Tally {
 pub fn translate_event(id: DownloadId, event: LibEvent, tally: &mut Tally, emit: Emit<'_>) {
     match event {
         LibEvent::SessionStarted { .. } | LibEvent::SessionCompleted { .. } => {}
+        LibEvent::Schedule { schedule } => emit(DownloadEvent::Schedule { id, schedule }),
         LibEvent::BeatmapsetStatus {
             beatmapset_id,
             status,

@@ -212,6 +212,51 @@ async fn map_is_dropped_after_the_deferral_pass_cap() {
     server.join().unwrap();
 }
 
+#[tokio::test]
+async fn schedule_events_are_emitted_while_a_batch_runs() {
+    // Hold the response open long enough for several forecast ticks to fire.
+    let (addr, server) = spawn_path_router(1, |_path, stream| {
+        thread::sleep(Duration::from_millis(60));
+        let _ = stream.write_all(&ok_archive(9));
+    });
+    let mirror = Mirror::custom(format!("http://{addr}/d/{{id}}")).unwrap();
+    let pool = Arc::new(MirrorPool::new(vec![mirror]));
+    let dir = tempfile::tempdir().unwrap();
+    let (event_tx, mut event_rx) = mpsc::unbounded_channel();
+    let (_cancel_tx, cancel_rx) = watch::channel(false);
+
+    let summary = download_batch(
+        vec![9],
+        dir.path(),
+        reqwest::Client::new(),
+        pool,
+        test_config(1, Duration::ZERO),
+        event_tx,
+        cancel_rx,
+        Arc::new(Notify::new()),
+        Arc::new(Notify::new()),
+    )
+    .await;
+
+    assert_eq!(summary.downloaded, vec![9]);
+    let mut schedules = Vec::new();
+    while let Ok(event) = event_rx.try_recv() {
+        if let Event::Schedule { schedule } = event {
+            schedules.push(schedule);
+        }
+    }
+    assert!(
+        !schedules.is_empty(),
+        "a running batch emits schedule forecasts"
+    );
+    assert!(schedules.iter().all(|schedule| schedule.mirrors.len() == 1));
+    assert!(
+        schedules.iter().any(|schedule| schedule.outstanding == 1),
+        "the forecast counts the request still in flight"
+    );
+    server.join().unwrap();
+}
+
 #[test]
 fn drain_deferred_drops_requeued_items_and_keeps_fresh_ones() {
     let queue = BatchQueue::new(&[10, 20]);
