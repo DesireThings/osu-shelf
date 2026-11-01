@@ -64,20 +64,103 @@ fn beatmap(stage: BeatmapStage, set: u32) -> DownloadEvent {
     }
 }
 
-#[test]
-fn a_schedule_forecast_is_kept_on_the_status() {
-    let mut s = status();
-    let schedule = osu_downloader::Schedule {
+fn forecast(eta_ms: u64) -> osu_downloader::Schedule {
+    osu_downloader::Schedule {
         outstanding: 4,
-        request_eta: Duration::from_millis(1500),
-        mirrors: Vec::new(),
-    };
+        request_eta: Duration::from_millis(eta_ms),
+        mirrors: vec![osu_downloader::MirrorSchedule {
+            mirror: osu_downloader::MirrorRef {
+                kind: osu_downloader::MirrorKind::Custom,
+                host: "mirror.example".into(),
+            },
+            next_free_in: Duration::from_millis(900),
+            cooldown_in: None,
+            budget_in: Some(Duration::from_secs(90)),
+            remaining_requests: Some(3),
+            reset_in: Some(Duration::from_secs(600)),
+        }],
+    }
+}
 
-    s.apply(&DownloadEvent::Schedule { id: 1, schedule });
+#[test]
+fn a_schedule_forecast_populates_the_serialisable_eta() {
+    let mut s = status();
 
-    let kept = s.schedule.as_ref().expect("forecast stored on the status");
-    assert_eq!(kept.outstanding, 4);
-    assert_eq!(kept.request_eta, Duration::from_millis(1500));
+    s.apply(&DownloadEvent::Schedule {
+        id: 1,
+        schedule: forecast(1500),
+    });
+
+    assert_eq!(s.eta_secs, Some(2), "rounded up to whole seconds");
+    let mirror = s.mirrors.first().expect("the mirror's wait");
+    assert_eq!(mirror.mirror, "mirror.example");
+    assert_eq!(mirror.next_free_secs, 1);
+    assert_eq!(mirror.cooldown_secs, None);
+    assert_eq!(mirror.budget_secs, Some(90));
+    assert_eq!(mirror.remaining_requests, Some(3));
+
+    let json = serde_json::to_value(&s).unwrap();
+    assert_eq!(json["eta_secs"], 2);
+    assert_eq!(json["mirrors"][0]["mirror"], "mirror.example");
+    assert_eq!(json["mirrors"][0]["budget_secs"], 90);
+}
+
+#[test]
+fn finishing_a_run_clears_the_forecast_eta() {
+    let mut s = status();
+    s.apply(&DownloadEvent::Schedule {
+        id: 1,
+        schedule: forecast(60_000),
+    });
+
+    s.apply(&DownloadEvent::Finished {
+        id: 1,
+        summary: DownloadSummary {
+            downloaded: 4,
+            skipped: 0,
+            failed: 0,
+            unverified: 0,
+        },
+    });
+
+    assert_eq!(s.phase, Phase::Done);
+    assert_eq!(s.eta_secs, None);
+    assert!(s.mirrors.is_empty());
+}
+
+#[tokio::test]
+async fn a_schedule_event_reaches_the_window_with_the_eta() {
+    let pushed: Arc<Mutex<Vec<DownloadStatus>>> = Arc::default();
+    let downloads = Downloads::new({
+        let pushed = pushed.clone();
+        Arc::new(move |s: &DownloadStatus| pushed.lock().unwrap().push(s.clone()))
+    });
+    downloads.inner.lock().unwrap().runs.insert(
+        1,
+        Run {
+            status: status(),
+            request: None,
+            handle: None,
+        },
+    );
+    let (tx, rx) = mpsc::unbounded_channel();
+    let pump = tokio::spawn(downloads.clone().pump(1, rx));
+
+    tx.send(DownloadEvent::Schedule {
+        id: 1,
+        schedule: forecast(90_000),
+    })
+    .unwrap();
+    drop(tx);
+    pump.await.unwrap();
+
+    let pushed = pushed.lock().unwrap();
+    assert!(
+        pushed
+            .iter()
+            .any(|s| s.eta_secs == Some(90) && s.mirrors.len() == 1),
+        "the queue must push the forecast to the window"
+    );
 }
 
 #[test]

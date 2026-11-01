@@ -94,6 +94,20 @@ export interface Failure {
 /** A whole collection, the missing sets an update scan found, or picked search results. */
 export type RunKind = "collection" | "update" | "find";
 
+/** One mirror's wait behind the download forecast. */
+export interface MirrorForecast {
+  /** Provider name, or a custom mirror's host. */
+  mirror: string;
+  /** Seconds until this mirror can send its next request. */
+  next_free_secs: number;
+  /** Seconds left on a reactive 429 cooldown, when one is live. */
+  cooldown_secs: number | null;
+  /** Seconds until a live request or byte budget admits the next request. */
+  budget_secs: number | null;
+  /** Fewest requests still affordable against live request budgets. */
+  remaining_requests: number | null;
+}
+
 export interface DownloadStatus {
   id: number;
   kind: RunKind;
@@ -115,6 +129,14 @@ export interface DownloadStatus {
   retry_in_secs: number | null;
   /** Sets skipped because the mirrors stayed busy (part of `skipped`). */
   skipped_busy: number;
+  /**
+   * Seconds until every outstanding request can have been sent, from the latest
+   * mirror-schedule forecast. A lower bound on the time left; null until the
+   * first forecast and after the run ends.
+   */
+  eta_secs: number | null;
+  /** Per-mirror waits behind `eta_secs`. */
+  mirrors: MirrorForecast[];
   failures: Failure[];
   error: string | null;
   warning: string | null;

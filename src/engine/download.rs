@@ -74,6 +74,38 @@ pub struct Failure {
     pub reason: &'static str,
 }
 
+/// One mirror's wait behind the download forecast, as the window sees it.
+/// The library's raw schedule type stays internal to the engine.
+#[derive(Debug, Clone, Serialize)]
+pub struct MirrorForecast {
+    /// Mirror's display label: the provider name, or a custom mirror's host.
+    pub mirror: String,
+    /// Seconds until the mirror can send its next request, counting request
+    /// spacing, a live 429 cooldown, and any live budget.
+    pub next_free_secs: u64,
+    /// Seconds left on a reactive 429 cooldown, when one is live.
+    pub cooldown_secs: Option<u64>,
+    /// Seconds until a live request or byte budget admits the next request,
+    /// when the mirror is budget-blocked.
+    pub budget_secs: Option<u64>,
+    /// Fewest requests still affordable against the mirror's live request
+    /// budgets; `None` when it publishes none (anonymous mirrors).
+    pub remaining_requests: Option<u64>,
+}
+
+impl MirrorForecast {
+    fn from_schedule(entry: &osu_downloader::MirrorSchedule) -> Self {
+        let secs = |duration: Duration| duration.as_secs_f64().ceil() as u64;
+        Self {
+            mirror: entry.mirror.label().to_string(),
+            next_free_secs: secs(entry.next_free_in),
+            cooldown_secs: entry.cooldown_in.map(secs),
+            budget_secs: entry.budget_in.map(secs),
+            remaining_requests: entry.remaining_requests,
+        }
+    }
+}
+
 /// Everything the GUI shows for one collection's download.
 #[derive(Debug, Clone, Serialize)]
 pub struct DownloadStatus {
@@ -113,10 +145,14 @@ pub struct DownloadStatus {
     pub warning: Option<String>,
     /// Folder the collection's maps go into, once known.
     pub folder: Option<String>,
-    /// Latest mirror-schedule forecast for the run. Diagnostics only for now:
-    /// kept out of the frontend payload until the UI consumes an ETA.
-    #[serde(skip)]
-    pub schedule: Option<osu_downloader::Schedule>,
+    /// Seconds until every outstanding request can have been sent, from the
+    /// latest mirror-schedule forecast: a lower bound on the time left, since
+    /// bytes for sent requests still have to arrive. `None` until the first
+    /// forecast arrives and after the run ends; `Some(0)` means the mirrors can
+    /// send everything still queued at once.
+    pub eta_secs: Option<u64>,
+    /// Per-mirror waits behind [`Self::eta_secs`], in mirror-list order.
+    pub mirrors: Vec<MirrorForecast>,
     #[serde(skip)]
     finished_bytes: u64,
     #[serde(skip)]
@@ -155,7 +191,8 @@ impl DownloadStatus {
             error: None,
             warning: None,
             folder: None,
-            schedule: None,
+            eta_secs: None,
+            mirrors: Vec::new(),
             finished_bytes: 0,
             in_flight: HashMap::new(),
             active_sets: HashSet::new(),
@@ -276,7 +313,12 @@ impl DownloadStatus {
                 false
             }
             DownloadEvent::Schedule { schedule, .. } => {
-                self.schedule = Some(schedule.clone());
+                self.eta_secs = Some(schedule.request_eta.as_secs_f64().ceil() as u64);
+                self.mirrors = schedule
+                    .mirrors
+                    .iter()
+                    .map(MirrorForecast::from_schedule)
+                    .collect();
                 false
             }
             DownloadEvent::OverallProgress {
@@ -366,7 +408,8 @@ impl DownloadStatus {
         self.in_flight.clear();
         self.active_sets.clear();
         self.deferred.clear();
-        self.schedule = None;
+        self.eta_secs = None;
+        self.mirrors.clear();
         self.active = 0;
         self.refresh_bytes();
         self.refresh_waiting();
