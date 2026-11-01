@@ -16,7 +16,9 @@
     { id: "stable", name: "osu! stable", blurb: "The classic osu! client" },
   ];
 
-  const detected = $derived(settings.client === "lazer" ? installs.lazer : installs.stable);
+  const detected = $derived(
+    settings.client === "lazer" ? (installs.lazer[0] ?? null) : installs.stable,
+  );
   const osuFolder = $derived(settings.osu_path ?? detected);
 
   function pickClient(client: OsuClient) {
@@ -100,6 +102,27 @@
           : "It's the folder with osu!.exe and osu!.db in it."}
       </p>
     {/if}
+    {#if settings.client === "lazer" && installs.lazer.length > 1}
+      <p class="detected-label">Detected lazer installs</p>
+      <div class="installs">
+        {#each installs.lazer as path (path)}
+          <label class="install" class:selected={osuFolder === path}>
+            <input
+              type="radio"
+              name="lazer-install"
+              checked={osuFolder === path}
+              onchange={() => (settings.osu_path = path === installs.lazer[0] ? null : path)}
+            />
+            <code class="path">{path}</code>
+            {#if path === installs.lazer[0]}<span class="muted small">newest</span>{/if}
+          </label>
+        {/each}
+      </div>
+      <p class="muted small">
+        The newest install is used unless you pick another, so separate osu! and Torii builds can
+        keep their own folders.
+      </p>
+    {/if}
   </div>
 </section>
 
@@ -124,3 +147,28 @@
     {saving ? "Saving…" : "Save and continue"}
   </button>
 </div>
+
+<style>
+  .detected-label {
+    margin-top: 10px;
+  }
+  .installs {
+    display: grid;
+    gap: 8px;
+  }
+  .install {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    padding: 8px 10px;
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+  }
+  .install.selected {
+    border-color: var(--accent);
+  }
+  .install .path {
+    flex: 1;
+  }
+</style>
