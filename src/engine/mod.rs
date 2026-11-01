@@ -27,7 +27,7 @@ pub mod updates;
 pub use crate::download::lazer_import::{
     IMPORT_FOLDER_NAME, ImportFolderReport, build_import_folder,
 };
-pub use download::{DownloadStatus, Downloads, Failure, OnUpdate, Phase, RunKind};
+pub use download::{DownloadStatus, Downloads, Failure, MirrorForecast, OnUpdate, Phase, RunKind};
 pub use find::{FindCheck, FindCriteria, FindOptions, FindPage, FindPick, Owned};
 pub use options::{
     DownloadOptions, MirrorSetting, load_download_options, remove_api_app, save_api_app,

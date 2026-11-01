@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { skipWaiting, type DownloadStatus } from "./api";
+  import { skipWaiting, type DownloadStatus, type MirrorForecast } from "./api";
 
   let { status }: { status: DownloadStatus } = $props();
 
@@ -46,6 +46,45 @@
     return secs < 90 ? `in ${secs} s` : `in about ${Math.ceil(secs / 60)} min`;
   }
 
+  /** `45 s`, `2 min`, `1 h 12 min` — for mirror waits in the ETA's tooltip. */
+  function shortDuration(secs: number): string {
+    if (secs < 60) return `${secs} s`;
+    if (secs < 3600) return `${Math.round(secs / 60)} min`;
+    if (secs < 86400) {
+      const hours = Math.floor(secs / 3600);
+      const minutes = Math.floor((secs % 3600) / 60);
+      return minutes > 0 ? `${hours} h ${minutes} min` : `${hours} h`;
+    }
+    const days = Math.floor(secs / 86400);
+    const hours = Math.floor((secs % 86400) / 3600);
+    return hours > 0 ? `${days} d ${hours} h` : `${days} d`;
+  }
+
+  // The forecast is a lower bound: it covers when the mirrors can send every
+  // outstanding request, not how long those requests then take to arrive.
+  const eta = $derived.by(() => {
+    const secs = status.eta_secs;
+    if (secs === null || secs === 0) return null;
+    if (secs < 60) return "under a minute left";
+    if (secs >= 86400) return "over a day left";
+    return `about ${shortDuration(secs)} left`;
+  });
+
+  /** Live mirror cooldowns and budget blocks, listed in the ETA's tooltip. */
+  const mirrorHolds = $derived(
+    status.mirrors
+      .map((m: MirrorForecast): string | null => {
+        const blocked = m.cooldown_secs ?? m.budget_secs;
+        if (blocked === null) return null;
+        const reason = m.cooldown_secs !== null ? "cooling down" : "budget blocked";
+        const left =
+          m.remaining_requests !== null ? `, ${m.remaining_requests} requests left` : "";
+        return `${m.mirror}: ${reason} for ${shortDuration(blocked)}${left}`;
+      })
+      .filter((hold): hold is string => hold !== null)
+      .join("\n"),
+  );
+
   const summary = $derived.by(() => {
     const parts = [`${status.downloaded} new`];
     const alreadyHad = status.skipped - status.skipped_busy;
@@ -69,6 +108,7 @@
       {#if status.active > 0}· {status.active} downloading now{/if}
       {#if status.waiting > 0}· {status.waiting} waiting for a free mirror{/if}
       {#if status.bytes_done > 0}· {size(status.bytes_done)}{/if}
+      {#if eta}<span title={mirrorHolds || undefined}>· {eta}</span>{/if}
     </p>
     {#if status.waiting > 0}
       <div class="waiting">
