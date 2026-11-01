@@ -738,12 +738,14 @@ fn dispatch_command(
     tasks: &mut BackgroundTasks,
 ) -> bool {
     match cmd {
-        Some(AppCommand::StartDownload { id, request }) => {
+        Some(AppCommand::StartDownload { id, mut request }) => {
+            request.config.scheduler = Some(app.mirror_scheduler.clone());
             let handle = download::spawn_download(id, request, download_tx.clone());
             info!(download_id = id, "Spawned download from UI request");
             downloads.insert(id, handle);
         }
-        Some(AppCommand::StartSelectiveDownload { id, request }) => {
+        Some(AppCommand::StartSelectiveDownload { id, mut request }) => {
+            request.config.scheduler = Some(app.mirror_scheduler.clone());
             let handle = download::spawn_selective_download(id, request, download_tx.clone());
             info!(
                 download_id = id,
@@ -751,7 +753,8 @@ fn dispatch_command(
             );
             downloads.insert(id, handle);
         }
-        Some(AppCommand::StartIdsDownload { id, request }) => {
+        Some(AppCommand::StartIdsDownload { id, mut request }) => {
+            request.config.scheduler = Some(app.mirror_scheduler.clone());
             let source = request.source;
             let handle = download::spawn_ids_download(id, request, download_tx.clone());
             info!(
@@ -930,9 +933,10 @@ fn dispatch_command(
                 .map(|p| p.retryable_ids(None))
                 .unwrap_or_default();
             if !retryable_ids.is_empty()
-                && let Some((new_id, request)) =
+                && let Some((new_id, mut request)) =
                     app.start_retry_download(download_id, retryable_ids)
             {
+                request.config.scheduler = Some(app.mirror_scheduler.clone());
                 let handle = download::spawn_ids_download(new_id, request, download_tx.clone());
                 info!(
                     source_download_id = download_id,

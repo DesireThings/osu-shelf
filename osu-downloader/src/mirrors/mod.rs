@@ -2,6 +2,7 @@ mod limits;
 pub(crate) mod pool;
 
 pub(crate) use limits::LimitPolicy;
+pub use pool::SchedulerHandle;
 pub(crate) use pool::{Acquire, MirrorPool, WaitKind};
 
 use crate::error::{Error, Result};

@@ -1,4 +1,7 @@
-use super::{Acquire, INTERVAL_DECAY, MirrorPool, RETRY_AFTER_MAX, RETRY_AFTER_MIN, WaitKind};
+use super::{
+    Acquire, INTERVAL_DECAY, MirrorPool, RETRY_AFTER_MAX, RETRY_AFTER_MIN, SchedulerHandle,
+    WaitKind,
+};
 use crate::{Mirror, MirrorKind};
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use std::time::{Duration, Instant};
@@ -476,4 +479,144 @@ fn header_budgets_are_per_slot() {
     assert_eq!(granted(pool.acquire_at(&[1], now)), 1);
     let (_until, kind) = waited(pool.acquire_at(&[0], now));
     assert_eq!(kind, WaitKind::Budget);
+}
+
+#[test]
+fn schedule_of_an_idle_pool_needs_no_wait() {
+    let pool = MirrorPool::new(vec![Mirror::nerinyan(), Mirror::osu_direct()]);
+    let now = Instant::now();
+    let schedule = pool.schedule_at(2, now);
+
+    assert_eq!(schedule.outstanding, 2);
+    assert_eq!(schedule.request_eta, Duration::ZERO);
+    assert_eq!(schedule.mirrors.len(), 2);
+    assert!(
+        schedule
+            .mirrors
+            .iter()
+            .all(|mirror| mirror.next_free_in == Duration::ZERO)
+    );
+    // The anonymous built-ins publish no budget headers.
+    assert!(
+        schedule
+            .mirrors
+            .iter()
+            .all(|mirror| mirror.remaining_requests.is_none())
+    );
+}
+
+#[test]
+fn schedule_eta_counts_request_spacing_tokens() {
+    let base = Duration::from_secs(1);
+    let pool = MirrorPool::new_with_base_interval(vec![Mirror::nerinyan()], base);
+    let now = Instant::now();
+
+    // One send now, then one per interval: the third needs two full intervals.
+    let schedule = pool.schedule_at(3, now);
+    assert_eq!(schedule.request_eta, Duration::from_secs(2));
+    assert_eq!(schedule.mirrors[0].next_free_in, Duration::ZERO);
+}
+
+#[test]
+fn schedule_eta_includes_a_live_cooldown() {
+    let pool = MirrorPool::new(vec![Mirror::nerinyan()]);
+    let now = Instant::now();
+    pool.mark_rate_limited_at(0, None, now);
+
+    let schedule = pool.schedule_at(1, now);
+    assert_eq!(schedule.request_eta, base_cooldown());
+    assert_eq!(schedule.mirrors[0].cooldown_in, Some(base_cooldown()));
+}
+
+#[test]
+fn schedule_reports_budget_headroom_and_reset() {
+    let pool = MirrorPool::new(vec![Mirror::with_kind_and_template(
+        MirrorKind::Catboy,
+        "http://catboy.test/d/{id}",
+    )]);
+    let now = Instant::now();
+    // 60 rate units at 20 per download: three requests fit in this window.
+    pool.observe_headers_at(
+        0,
+        &headers(&[("x-ratelimit-remaining", "60"), ("x-ratelimit-reset", "30")]),
+        now,
+        TEST_UNIX,
+    );
+
+    let schedule = pool.schedule_at(4, now);
+    assert_eq!(schedule.mirrors[0].remaining_requests, Some(3));
+    assert_eq!(schedule.mirrors[0].reset_in, Some(Duration::from_secs(30)));
+    assert_eq!(schedule.mirrors[0].budget_in, None);
+    // Three fit before the reset, and the reset refills them: the fourth waits
+    // for the reset instant.
+    assert_eq!(schedule.request_eta, Duration::from_secs(30));
+}
+
+#[test]
+fn schedule_caps_a_permanently_blocked_pool_at_seven_days() {
+    let pool = MirrorPool::new(vec![Mirror::with_kind_and_template(
+        MirrorKind::Catboy,
+        "http://catboy.test/d/{id}",
+    )]);
+    let now = Instant::now();
+    pool.observe_headers_at(
+        0,
+        &headers(&[
+            ("x-ratelimit-remaining", "0"),
+            ("x-ratelimit-reset", "604800"),
+        ]),
+        now,
+        TEST_UNIX,
+    );
+
+    let schedule = pool.schedule_at(1, now);
+    assert_eq!(schedule.request_eta, Duration::from_secs(7 * 24 * 60 * 60));
+    assert_eq!(schedule.mirrors[0].remaining_requests, Some(0));
+    assert_eq!(
+        schedule.mirrors[0].reset_in,
+        Some(Duration::from_secs(7 * 24 * 60 * 60))
+    );
+    assert_eq!(
+        schedule.mirrors[0].budget_in,
+        Some(Duration::from_secs(7 * 24 * 60 * 60))
+    );
+}
+
+#[test]
+fn a_shared_handle_carries_spacing_between_pools() {
+    let scheduler = SchedulerHandle::new();
+    let first = MirrorPool::with_scheduler(vec![Mirror::nerinyan()], scheduler.clone());
+    let now = Instant::now();
+    assert_eq!(granted(first.acquire_at(&[0], now)), 0);
+
+    let second = MirrorPool::with_scheduler(vec![Mirror::nerinyan()], scheduler);
+    // The grant in the first pool consumed the shared token...
+    let (until, kind) = waited(second.acquire_at(&[0], now));
+    assert_eq!(kind, WaitKind::Spacing);
+    assert_eq!(until, now + MirrorKind::Nerinyan.base_request_interval());
+    // ...so the second pool's forecast starts from the shared next-free time.
+    assert_eq!(
+        second.schedule_at(1, now).request_eta,
+        MirrorKind::Nerinyan.base_request_interval()
+    );
+}
+
+#[test]
+fn custom_mirrors_on_one_host_keep_independent_slots() {
+    // Same host, different paths: the template is part of the slot identity,
+    // so a 429 on one endpoint must not sideline the other.
+    let pool = MirrorPool::new(vec![
+        Mirror::custom("http://127.0.0.1:9/bad/{id}").unwrap(),
+        Mirror::custom("http://127.0.0.1:9/ok/{id}").unwrap(),
+    ]);
+    let now = Instant::now();
+    pool.mark_rate_limited_at(0, None, now);
+    assert_eq!(granted(pool.acquire_at(&[0, 1], now)), 1);
+}
+
+#[test]
+fn a_duplicate_mirror_appears_once_in_the_schedule() {
+    let pool = MirrorPool::new(vec![Mirror::nerinyan(), Mirror::nerinyan()]);
+    let now = Instant::now();
+    assert_eq!(pool.schedule_at(1, now).mirrors.len(), 1);
 }

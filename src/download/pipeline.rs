@@ -712,7 +712,7 @@ fn build_downloader(
     mirrors: Vec<Mirror>,
     on_exists: OnExists,
 ) -> Result<Downloader, DownloadError> {
-    Downloader::builder()
+    let mut builder = Downloader::builder()
         .mirrors(mirrors)
         .user_agent(USER_AGENT)
         .concurrent_downloads(config.concurrent.max(1) as usize)
@@ -724,7 +724,11 @@ fn build_downloader(
             config
                 .auto_skip_rate_limited
                 .then(|| Duration::from_secs(config.rate_limit_skip_secs.max(1) as u64)),
-        )
+        );
+    if let Some(scheduler) = &config.scheduler {
+        builder = builder.scheduler(scheduler.clone());
+    }
+    builder
         .build()
         .map_err(|err| DownloadError::internal(err.to_string()))
 }

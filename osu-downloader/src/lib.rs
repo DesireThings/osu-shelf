@@ -71,8 +71,10 @@ pub mod size;
 pub use download::sanitize_filename;
 pub use downloader::{Downloader, DownloaderBuilder, OnExists, Session};
 pub use error::{Error, Result};
-pub use event::{DeferReason, Event, RateLimitKind, Skip, Status, Summary};
-pub use mirrors::{Mirror, MirrorKind, MirrorRef};
+pub use event::{
+    DeferReason, Event, MirrorSchedule, RateLimitKind, Schedule, Skip, Status, Summary,
+};
+pub use mirrors::{Mirror, MirrorKind, MirrorRef, SchedulerHandle};
 pub use output_entry::{OutputEntry, classify_output_entry};
 pub use validation::{
     ArchiveValidation, ArchiveValidationResult, validate_and_remove, validate_archive,

@@ -17,7 +17,7 @@ pub use pipeline::{
 pub(crate) use session::{ids_folder_name, selective_folder_name};
 
 pub use crate::config::constants::status;
-pub use osu_downloader::{ArchiveValidation, DeferReason};
+pub use osu_downloader::{ArchiveValidation, DeferReason, SchedulerHandle};
 
 use crate::app::collection::FailureReason;
 use crate::config::constants::USER_AGENT;
@@ -98,6 +98,10 @@ pub struct DownloadConfig {
     pub archive_validation: ArchiveValidation,
     pub auto_skip_rate_limited: bool,
     pub rate_limit_skip_secs: u32,
+    /// Shared mirror-scheduler state, when the caller owns one. `None` gives
+    /// the run a fresh scheduler; a handle keeps spacing and budget state warm
+    /// across runs.
+    pub scheduler: Option<SchedulerHandle>,
 }
 
 #[derive(Debug, Clone)]
@@ -336,6 +340,13 @@ pub enum DownloadEvent {
         retry_in: Duration,
         /// Whether a cooldown, a budget, or plain spacing caused the requeue.
         reason: DeferReason,
+    },
+    /// Periodic mirror-schedule forecast from the library: when the run's
+    /// outstanding requests can all be sent, plus per-mirror spacing and
+    /// budget state.
+    Schedule {
+        id: DownloadId,
+        schedule: osu_downloader::Schedule,
     },
     Finished {
         id: DownloadId,

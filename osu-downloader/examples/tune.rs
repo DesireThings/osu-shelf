@@ -293,6 +293,7 @@ async fn run(args: Args) -> Result<(), String> {
                         ));
                     }
                     Event::SessionStarted { .. } | Event::Progress { .. } | Event::SessionCompleted { .. } => {}
+                    Event::Schedule { .. } => {}
                 }
             }
         }

@@ -29,7 +29,8 @@ use crate::{
     core::search::SearchQuery,
     download::{
         DownloadConfig, DownloadEvent, DownloadId, DownloadRequest, DownloadStage,
-        IdsDownloadRequest, IdsRunSource, SelectiveDownloadCollection, SelectiveDownloadRequest,
+        IdsDownloadRequest, IdsRunSource, SchedulerHandle, SelectiveDownloadCollection,
+        SelectiveDownloadRequest,
     },
     osu_db::OsuClient,
     utils,
@@ -72,6 +73,9 @@ pub struct App {
     /// source's path field. Hoisted off `update` so one value backs all readers.
     pub library: LibraryState,
     pub config: ConfigTab,
+    /// Shared mirror-scheduler state across every download this session
+    /// starts, so a mirror's spacing and budget state survives between runs.
+    pub mirror_scheduler: SchedulerHandle,
     pub downloads: Vec<CollectionPage>,
     /// Downloads-tab view state (list cursor + pane focus). The rows it points
     /// into are built per frame from `downloads` + `history`.
@@ -377,6 +381,7 @@ impl App {
             home: HomeTab::new(&config),
             library: LibraryState::from_config(&config),
             config: ConfigTab::new(&config),
+            mirror_scheduler: SchedulerHandle::new(),
             downloads: Vec::new(),
             downloads_tab: DownloadsTab::default(),
             history: DownloadHistory::default(),
@@ -1225,6 +1230,8 @@ impl App {
             archive_validation: self.config.archive_validation,
             auto_skip_rate_limited: self.config.auto_skip_rate_limited,
             rate_limit_skip_secs: self.config.parse_rate_limit_skip_secs().unwrap_or(60),
+            // The runtime dispatch injects this session's shared handle.
+            scheduler: None,
         };
 
         let mut current_snapshots = snapshots::current_snapshots(
@@ -1769,6 +1776,7 @@ impl App {
             archive_validation: self.config.archive_validation,
             auto_skip_rate_limited: self.config.auto_skip_rate_limited,
             rate_limit_skip_secs: self.config.parse_rate_limit_skip_secs().unwrap_or(60),
+            scheduler: Some(self.mirror_scheduler.clone()),
         }
     }
 
@@ -3007,6 +3015,9 @@ impl App {
             DownloadEvent::LibraryReadFailed { id: _, message } => {
                 self.toast_warn(message);
             }
+            DownloadEvent::Schedule { id: _, schedule: _ } => {
+                // Forecasts feed the GUI's ETA; the TUI does not display one yet.
+            }
             DownloadEvent::Finished { id, summary } => {
                 self.settle_run(id, |page| {
                     page.stage = DownloadStage::Completed;
@@ -3358,6 +3369,8 @@ impl App {
             archive_validation: config.archive_validation,
             auto_skip_rate_limited: config.auto_skip_rate_limited,
             rate_limit_skip_secs: config.rate_limit_skip_secs,
+            // The runtime dispatch injects this session's shared handle.
+            scheduler: None,
         };
 
         let new_id = self.next_download_id;

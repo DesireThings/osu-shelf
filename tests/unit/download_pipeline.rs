@@ -479,6 +479,7 @@ async fn prepare_selective_run(
         archive_validation: ArchiveValidation::Off,
         auto_skip_rate_limited: false,
         rate_limit_skip_secs: 60,
+        scheduler: None,
     };
     let payload = test_collection(
         COLLECTION_ID,
@@ -642,6 +643,7 @@ async fn size_fetch_call_site_excludes_owned_only_ids() {
         archive_validation: ArchiveValidation::Off,
         auto_skip_rate_limited: false,
         rate_limit_skip_secs: 60,
+        scheduler: None,
     };
     let request = crate::download::IdsDownloadRequest {
         beatmapset_ids: vec![10, 20, 30],
@@ -855,6 +857,7 @@ async fn run_selective_fixture(
         archive_validation: ArchiveValidation::Off,
         auto_skip_rate_limited: false,
         rate_limit_skip_secs: 60,
+        scheduler: None,
     };
     let request = crate::download::SelectiveDownloadRequest {
         collection_ids: vec![COLLECTION_ID],
@@ -1627,6 +1630,7 @@ async fn retry_builds_an_ids_request_that_reuses_the_source_output_dir() {
         archive_validation: ArchiveValidation::Off,
         auto_skip_rate_limited: false,
         rate_limit_skip_secs: 60,
+        scheduler: None,
     });
     page.output_dir = Some(source_output.to_string_lossy().into_owned());
     app.downloads.push(page);
@@ -1679,6 +1683,7 @@ async fn downloads_tell_the_mirror_which_app_is_asking() {
         archive_validation: ArchiveValidation::Magic,
         auto_skip_rate_limited: false,
         rate_limit_skip_secs: 60,
+        scheduler: None,
     };
     let mirror = Mirror::custom(format!("http://127.0.0.1:{port}/d/{{id}}")).unwrap();
     let downloader = build_downloader(&config, vec![mirror], OnExists::Skip).unwrap();
@@ -1763,6 +1768,7 @@ async fn collection_db_is_written_before_an_unsettled_map_finishes() {
         archive_validation: ArchiveValidation::Off,
         auto_skip_rate_limited: false,
         rate_limit_skip_secs: 60,
+        scheduler: None,
     };
     let request = crate::download::DownloadRequest {
         collection_input: collection.id.to_string(),

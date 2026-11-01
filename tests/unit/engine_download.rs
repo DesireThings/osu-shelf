@@ -65,6 +65,22 @@ fn beatmap(stage: BeatmapStage, set: u32) -> DownloadEvent {
 }
 
 #[test]
+fn a_schedule_forecast_is_kept_on_the_status() {
+    let mut s = status();
+    let schedule = osu_downloader::Schedule {
+        outstanding: 4,
+        request_eta: Duration::from_millis(1500),
+        mirrors: Vec::new(),
+    };
+
+    s.apply(&DownloadEvent::Schedule { id: 1, schedule });
+
+    let kept = s.schedule.as_ref().expect("forecast stored on the status");
+    assert_eq!(kept.outstanding, 4);
+    assert_eq!(kept.request_eta, Duration::from_millis(1500));
+}
+
+#[test]
 fn a_run_reports_name_progress_and_bytes() {
     let mut s = status();
 
@@ -374,6 +390,7 @@ fn update_request(beatmapset_ids: Vec<u32>) -> SelectiveDownloadRequest {
             archive_validation: Default::default(),
             auto_skip_rate_limited: false,
             rate_limit_skip_secs: 60,
+            scheduler: None,
         },
         snapshot_dir: None,
         snapshots: Vec::new(),

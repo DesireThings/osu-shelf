@@ -109,6 +109,17 @@ struct Budget {
     reset_at: Instant,
 }
 
+/// The budget fields a [`MirrorSchedule`](crate::MirrorSchedule) reports.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct ScheduleView {
+    /// Time until a live budget admits the next request, if any blocks it.
+    pub(crate) budget_in: Option<Duration>,
+    /// Fewest requests still affordable against the live request budgets.
+    pub(crate) remaining_requests: Option<u64>,
+    /// Time until the budget behind `remaining_requests` resets.
+    pub(crate) reset_in: Option<Duration>,
+}
+
 /// A fixed request quota tracked as a sliding window of grants.
 #[derive(Debug)]
 struct StaticQuota {
@@ -148,6 +159,32 @@ impl StaticQuota {
         } else {
             None
         }
+    }
+
+    /// Requests this quota still admits at `now`.
+    fn remaining(&self) -> u64 {
+        (self.limit as usize).saturating_sub(self.grants.len()) as u64
+    }
+
+    /// When the oldest outstanding grant frees a slot, or `now + window` when
+    /// the quota is full and nothing is outstanding.
+    fn reset_at(&self, now: Instant) -> Instant {
+        self.grants
+            .front()
+            .map_or(now + self.window, |first| *first + self.window)
+    }
+
+    /// Requests the quota can hand out by `until`. `prune` must have run at
+    /// `now` first.
+    fn tokens_by(&self, now: Instant, until: Instant) -> u64 {
+        let available = self.remaining();
+        if until <= now {
+            return available;
+        }
+        let windows = (until - now).as_nanos() / self.window.as_nanos().max(1);
+        available.saturating_add(
+            (self.limit as u64).saturating_mul(u64::try_from(windows).unwrap_or(u64::MAX)),
+        )
     }
 }
 
@@ -316,6 +353,89 @@ impl LimitState {
         self.est_bytes
     }
 
+    /// How many requests this slot's live budgets allow by `until`.
+    ///
+    /// Every live budget caps the answer: a request budget by its remaining
+    /// count, a byte budget by how many estimated sets fit in its remaining
+    /// bytes, and the static quota by its sliding window. A reset is assumed to
+    /// replenish a budget to at least its current remaining value, and the
+    /// observed reset delay is reused as the window length for later resets.
+    /// `u64::MAX` means no budget constrains the slot.
+    pub(crate) fn tokens_by(&mut self, now: Instant, until: Instant, est_bytes: u64) -> u64 {
+        self.prune(now);
+        let mut tokens = u64::MAX;
+
+        if let Some(budget) = self.rate {
+            let per_window = budget.remaining / self.policy.rate_cost.max(1);
+            tokens = tokens.min(budget_tokens_by(&budget, now, until, per_window));
+        }
+        if let Some(budget) = self.burst {
+            tokens = tokens.min(budget_tokens_by(&budget, now, until, budget.remaining));
+        }
+        if let Some(budget) = self.daily_downloads {
+            tokens = tokens.min(budget_tokens_by(&budget, now, until, budget.remaining));
+        }
+        if let Some(budget) = self.daily_bytes {
+            let available = budget.remaining.saturating_sub(self.in_flight_bytes);
+            let needed = est_bytes.saturating_add(self.policy.byte_reserve);
+            let per_window = available.checked_div(needed).unwrap_or(u64::MAX);
+            tokens = tokens.min(budget_tokens_by(&budget, now, until, per_window));
+        }
+        if let Some(quota) = &mut self.static_quota {
+            quota.prune(now);
+            tokens = tokens.min(quota.tokens_by(now, until));
+        }
+
+        tokens
+    }
+
+    /// The per-mirror fields a [`MirrorSchedule`](crate::MirrorSchedule)
+    /// reports at `now`: when a budget next admits a request, how many requests
+    /// remain affordable, and when that budget resets.
+    pub(crate) fn schedule_view(&mut self, now: Instant, est_bytes: u64) -> ScheduleView {
+        let budget_in = self
+            .blocked_until(now, est_bytes)
+            .map(|until| until.saturating_duration_since(now));
+
+        let mut lowest: Option<(u64, Instant)> = None;
+        let mut consider = |remaining: u64, reset_at: Instant| {
+            if lowest.is_none_or(|(current, _)| remaining < current) {
+                lowest = Some((remaining, reset_at));
+            }
+        };
+
+        if let Some(budget) = self.rate {
+            consider(
+                budget.remaining / self.policy.rate_cost.max(1),
+                budget.reset_at,
+            );
+        }
+        if let Some(budget) = self.burst {
+            consider(budget.remaining, budget.reset_at);
+        }
+        if let Some(budget) = self.daily_downloads {
+            consider(budget.remaining, budget.reset_at);
+        }
+        if let Some(quota) = &mut self.static_quota {
+            quota.prune(now);
+            consider(quota.remaining(), quota.reset_at(now));
+        }
+
+        let (remaining_requests, reset_in) = match lowest {
+            Some((remaining, reset_at)) => (
+                Some(remaining),
+                Some(reset_at.saturating_duration_since(now)),
+            ),
+            None => (None, None),
+        };
+
+        ScheduleView {
+            budget_in,
+            remaining_requests,
+            reset_in,
+        }
+    }
+
     fn prune(&mut self, now: Instant) {
         for budget in [
             &mut self.rate,
@@ -388,6 +508,32 @@ fn header_reset(headers: &HeaderMap, name: &str, now: Instant, now_unix: u64) ->
     };
     let seconds = seconds.clamp(0.0, HEADER_RESET_MAX.as_secs_f64());
     Some(now + Duration::from_secs_f64(seconds))
+}
+
+/// Requests one header-driven budget can underwrite by `until`.
+///
+/// `per_window` is the budget's current remaining allowance (in requests).
+/// Each reset is assumed to restore at least that much again, and the delay
+/// from `now` to the observed reset is reused as the window length for later
+/// resets.
+fn budget_tokens_by(budget: &Budget, now: Instant, until: Instant, per_window: u64) -> u64 {
+    if per_window == 0 {
+        return 0;
+    }
+    if until < budget.reset_at {
+        return per_window;
+    }
+    let window = budget
+        .reset_at
+        .saturating_duration_since(now)
+        .max(Duration::from_millis(1));
+    // The current allowance plus one refill at the observed reset, plus one
+    // more for every full window after it.
+    let extra = (until - budget.reset_at).as_nanos() / window.as_nanos();
+    u64::try_from(extra)
+        .unwrap_or(u64::MAX)
+        .saturating_add(2)
+        .saturating_mul(per_window)
 }
 
 pub(crate) fn unix_now() -> u64 {

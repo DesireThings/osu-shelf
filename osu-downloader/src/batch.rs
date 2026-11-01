@@ -46,6 +46,12 @@ const REQUEUE_JITTER_MAX: Duration = Duration::from_millis(25);
 #[cfg(test)]
 const REQUEUE_JITTER_MAX: Duration = Duration::from_millis(3);
 
+/// How often the batch emits a schedule forecast while it runs.
+#[cfg(not(test))]
+const SCHEDULE_INTERVAL: Duration = Duration::from_millis(500);
+#[cfg(test)]
+const SCHEDULE_INTERVAL: Duration = Duration::from_millis(10);
+
 #[derive(Clone)]
 pub(crate) struct BatchConfig {
     pub(crate) concurrent_downloads: usize,
@@ -156,6 +162,11 @@ impl BatchQueue {
         self.ready.notify_waiters();
     }
 
+    /// Items not yet terminal (queued plus in flight).
+    fn outstanding(&self) -> usize {
+        self.inner.lock().unwrap().outstanding
+    }
+
     /// Remove every deferred item (cooldown- or budget-waiting) from the queue,
     /// returning their ids. Fresh pass-0 items that merely have not started and
     /// healthy request-spacing requeues stay. Removal under the lock guarantees
@@ -217,6 +228,8 @@ pub(crate) async fn download_batch(
     }
 
     let queue = Arc::new(BatchQueue::new(&ids));
+    let mut schedule_tick = tokio::time::interval(SCHEDULE_INTERVAL);
+    schedule_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let worker_count = config.concurrent_downloads.max(1);
     let (result_tx, mut result_rx) = mpsc::unbounded_channel::<DownloadOutcome>();
     let mut worker_handles = Vec::with_capacity(worker_count);
@@ -289,6 +302,10 @@ pub(crate) async fn download_batch(
                 }
                 dropped.set(drop_signal.notified());
                 dropped.as_mut().enable();
+            }
+            _ = schedule_tick.tick() => {
+                let schedule = mirror_pool.schedule(queue.outstanding());
+                let _ = event_tx.send(Event::Schedule { schedule });
             }
         }
     }

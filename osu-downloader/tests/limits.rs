@@ -194,3 +194,113 @@ fn reserve_bytes_only_tracks_byte_budgets() {
     );
     assert_eq!(direct.reserve_bytes(100), 100);
 }
+
+#[test]
+fn schedule_view_reports_the_tightest_request_budget() {
+    let now = Instant::now();
+    let mut state = LimitState::new(LimitPolicy::catboy());
+    state.observe_headers_at(
+        &headers(&[("x-ratelimit-remaining", "60"), ("x-ratelimit-reset", "30")]),
+        now,
+        TEST_UNIX,
+    );
+
+    let view = state.schedule_view(now, 0);
+    assert_eq!(view.remaining_requests, Some(3));
+    assert_eq!(view.reset_in, Some(Duration::from_secs(30)));
+    assert_eq!(view.budget_in, None);
+}
+
+#[test]
+fn schedule_view_reports_a_blocking_byte_budget() {
+    let now = Instant::now();
+    let mut state = LimitState::new(LimitPolicy::osu_direct());
+    state.finish_attempt(0, Some(12 * 1024 * 1024));
+    state.observe_headers_at(
+        &headers(&[
+            ("x-download-budget-bytes-remaining", "1"),
+            ("x-download-budget-bytes-reset", "3600"),
+        ]),
+        now,
+        TEST_UNIX,
+    );
+
+    let view = state.schedule_view(now, state.estimated_bytes());
+    assert_eq!(view.budget_in, Some(Duration::from_secs(3600)));
+    // A byte budget is not a request-count budget.
+    assert_eq!(view.remaining_requests, None);
+}
+
+#[test]
+fn tokens_by_counts_budget_resets_inside_the_horizon() {
+    let now = Instant::now();
+    let mut state = LimitState::new(LimitPolicy::catboy());
+    state.observe_headers_at(
+        &headers(&[("x-ratelimit-remaining", "60"), ("x-ratelimit-reset", "30")]),
+        now,
+        TEST_UNIX,
+    );
+
+    assert_eq!(
+        state.tokens_by(now, now + Duration::from_secs(29), 0),
+        3,
+        "three downloads fit the live window"
+    );
+    assert_eq!(
+        state.tokens_by(now, now + Duration::from_secs(30), 0),
+        6,
+        "the reset at the horizon refills the window once"
+    );
+    assert_eq!(
+        state.tokens_by(now, now + Duration::from_secs(60), 0),
+        9,
+        "a later horizon adds one more window"
+    );
+}
+
+#[test]
+fn tokens_by_byte_budget_counts_resets() {
+    let now = Instant::now();
+    let mut state = LimitState::new(LimitPolicy::osu_direct());
+    state.finish_attempt(0, Some(12 * 1024 * 1024));
+    state.observe_headers_at(
+        &headers(&[
+            ("x-download-budget-bytes-remaining", "83886080"),
+            ("x-download-budget-bytes-reset", "3600"),
+        ]),
+        now,
+        TEST_UNIX,
+    );
+
+    let est = state.estimated_bytes();
+    // 80 MiB available, 12 MiB estimate + 64 MiB reserve per request.
+    assert_eq!(
+        state.tokens_by(now, now + Duration::from_secs(3599), est),
+        1
+    );
+    assert_eq!(
+        state.tokens_by(now, now + Duration::from_secs(3600), est),
+        2
+    );
+}
+
+#[test]
+fn tokens_by_static_quota_expands_by_full_windows() {
+    let now = Instant::now();
+    let mut state = LimitState::new(LimitPolicy::osu_api());
+    for i in 0..10 {
+        state.note_request(now + Duration::from_millis(i));
+    }
+
+    let start = now + Duration::from_secs(1);
+    assert_eq!(
+        state.tokens_by(start, start + Duration::from_secs(3599), 0),
+        0,
+        "the hour is spent"
+    );
+    assert_eq!(
+        state.tokens_by(start, start + Duration::from_secs(3600), 0),
+        10,
+        "a full window refills the quota"
+    );
+}

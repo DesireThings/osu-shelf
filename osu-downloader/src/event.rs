@@ -87,11 +87,51 @@ pub enum Event {
         reason: DeferReason,
     },
 
+    /// A periodic forecast of when the session's remaining requests can be
+    /// sent, emitted roughly twice a second.
+    Schedule {
+        /// Forecast at the instant it was taken.
+        schedule: Schedule,
+    },
+
     /// Session has finished.
     SessionCompleted {
         /// Aggregate summary.
         summary: Summary,
     },
+}
+
+/// A forecast of when the session's outstanding requests can all be sent.
+#[derive(Debug, Clone)]
+pub struct Schedule {
+    /// Requests not yet terminal: queued plus in flight.
+    pub outstanding: usize,
+    /// Time until every outstanding request can have been sent. Capped at
+    /// seven days when the mirrors cannot absorb the backlog sooner.
+    pub request_eta: Duration,
+    /// Per-mirror state behind the forecast, in mirror-list order.
+    pub mirrors: Vec<MirrorSchedule>,
+}
+
+/// One mirror's contribution to a [`Schedule`].
+#[derive(Debug, Clone)]
+pub struct MirrorSchedule {
+    /// Mirror this entry describes.
+    pub mirror: MirrorRef,
+    /// Time until the slot's send token frees (request spacing).
+    pub next_free_in: Duration,
+    /// Remaining reactive 429 cooldown, if one is live.
+    pub cooldown_in: Option<Duration>,
+    /// Time until a live request or byte budget admits the next request, if
+    /// the slot is budget-blocked.
+    pub budget_in: Option<Duration>,
+    /// Fewest requests still affordable against the slot's live request
+    /// budgets. `None` when no request budget is known (anonymous mirrors
+    /// publish none).
+    pub remaining_requests: Option<u64>,
+    /// Time until the budget behind `remaining_requests` resets. `None` when
+    /// no request budget is known.
+    pub reset_in: Option<Duration>,
 }
 
 /// Per-attempt status update emitted while a single beatmapset is being attempted.
