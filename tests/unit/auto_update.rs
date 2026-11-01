@@ -92,36 +92,52 @@ async fn start_mock_release_server(
                 Err(_) => break,
             };
 
-            let mut buf = [0u8; 4096];
-            let read = match socket.read(&mut buf).await {
-                Ok(size) => size,
-                Err(_) => break,
-            };
-            if read == 0 {
+            // A short read can be only part of the request line, so read until
+            // the headers are complete (or the peer goes away).
+            let mut buf = Vec::new();
+            let mut chunk = [0u8; 1024];
+            loop {
+                match socket.read(&mut chunk).await {
+                    Ok(0) | Err(_) => break,
+                    Ok(read) => {
+                        buf.extend_from_slice(&chunk[..read]);
+                        if buf.windows(4).any(|w| w == b"\r\n\r\n".as_slice())
+                            || buf.len() > 16 * 1024
+                        {
+                            break;
+                        }
+                    }
+                }
+            }
+            if buf.is_empty() {
                 continue;
             }
 
-            let request = String::from_utf8_lossy(&buf[..read]);
+            // One request per connection, announced with `Connection: close`:
+            // otherwise hyper can pool a connection this server is about to
+            // drop and fail the next request with `IncompleteMessage`.
+            let request = String::from_utf8_lossy(&buf);
             let response_bytes = if request.starts_with("GET /release") {
                 format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                    "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
                     release_body.len(),
                     release_body
                 )
                 .into_bytes()
             } else if request.starts_with("GET /asset") {
                 let mut resp = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n",
+                    "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: {}\r\n\r\n",
                     asset_body.len()
                 )
                 .into_bytes();
                 resp.extend_from_slice(&asset_body);
                 resp
             } else {
-                b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n".to_vec()
+                b"HTTP/1.1 404 Not Found\r\nConnection: close\r\nContent-Length: 0\r\n\r\n".to_vec()
             };
 
             let _ = socket.write_all(&response_bytes).await;
+            let _ = socket.shutdown().await;
         }
     });
 
