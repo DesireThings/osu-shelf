@@ -72,6 +72,8 @@
 
   const needsApiApp = $derived(checked?.route === "osu" && !apiApp);
   const canSearch = $derived(!!checked?.route && !checked.problem && !needsApiApp && !f.searching);
+  /** The shared "relevance" sort, which means newest ranked first on nzbasic. */
+  const relevanceSort = $derived(options ? options.sorts.indexOf("relevance") : -1);
   const advancedSet = $derived.by(() => {
     const c = f.criteria;
     if (!c || !options) return 0;
@@ -130,6 +132,7 @@
     inOsu.has(id) ? "osu" : downloadedSets.has(id) ? "downloaded" : null;
   const visibleRows = $derived(f.hideOwned ? f.rows.filter((r) => !have(r.id)) : f.rows);
   const hiddenCount = $derived(f.rows.length - visibleRows.length);
+  const shownCount = $derived(visibleRows.length);
 
   // A hidden row can't be seen to be ticked, so it stops counting: hiding
   // (or a download that adds to what the user has) unticks it.
@@ -250,7 +253,10 @@
       {:else if checked.route === "osu"}
         <p class="muted small">Searches osu! with your API app.</p>
       {:else}
-        <p class="muted small">Searches nzbasic's map database (no account needed).</p>
+        <p class="muted small">
+          Searches nzbasic's map database (no account needed).
+          {#if c.sort === relevanceSort}Relevance there means newest ranked first.{/if}
+        </p>
       {/if}
     {/if}
     {#if f.error}
@@ -323,9 +329,9 @@
       <section class="card results">
         <div class="results-head">
           <h2>
-            {f.route === "osu" && f.total > f.rows.length
-              ? `Showing ${f.rows.length.toLocaleString()} of ${plural(f.total, "result", "results")}`
-              : plural(f.rows.length, "result", "results")}
+            {shownCount < f.total
+              ? `Showing ${shownCount.toLocaleString()} of ${plural(f.total, "result", "results")}`
+              : plural(shownCount, "result", "results")}
           </h2>
           <div class="actions">
             <label class="check small">
